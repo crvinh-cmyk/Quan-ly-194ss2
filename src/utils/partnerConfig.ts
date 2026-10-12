@@ -22,7 +22,7 @@
  */
 
 // 1. Kiểm tra xem ứng dụng có đang chạy ở chế độ đối tác / cộng tác viên không
-export function isPartnerMode(): boolean {return false;
+export function isPartnerMode(): boolean {
   if (typeof window === 'undefined') {
     return false;
   }
