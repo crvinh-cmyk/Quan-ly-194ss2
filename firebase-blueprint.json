@@ -1,0 +1,144 @@
+{
+  "entities": {
+    "WorkshopInfo": {
+      "title": "WorkshopInfo",
+      "description": "Information about the printing workshop",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "subtitle": { "type": "string" },
+        "phone": { "type": "string" },
+        "hotline": { "type": "string" },
+        "address": { "type": "string" },
+        "zalo": { "type": "string" },
+        "bankAccount": { "type": "object" }
+      }
+    },
+    "Product": {
+      "title": "Product",
+      "description": "Photo printing product catalog item",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "code": { "type": "string" },
+        "name": { "type": "string" },
+        "category": { "type": "string" },
+        "size": { "type": "string" },
+        "price": { "type": "number" },
+        "studioPrice": { "type": "number" },
+        "retailPrice": { "type": "number" }
+      },
+      "required": ["id", "code", "name", "category", "price"]
+    },
+    "Customer": {
+      "title": "Customer",
+      "description": "Customer and photography studio profiles",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "phone": { "type": "string" },
+        "address": { "type": "string" },
+        "studioName": { "type": "string" },
+        "customerType": { "type": "string" },
+        "initialDebt": { "type": "number" },
+        "initialYearlyRevenue": { "type": "number" }
+      },
+      "required": ["id", "name"]
+    },
+    "Order": {
+      "title": "Order",
+      "description": "Sales invoice and print order",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "orderNumber": { "type": "string" },
+        "customerId": { "type": "string" },
+        "customerName": { "type": "string" },
+        "date": { "type": "string" },
+        "status": { "type": "string" },
+        "totalAmount": { "type": "number" },
+        "paidAmount": { "type": "number" }
+      },
+      "required": ["id", "orderNumber", "customerId", "date", "status"]
+    },
+    "Material": {
+      "title": "Material",
+      "description": "Warehouse inventory material",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "code": { "type": "string" },
+        "name": { "type": "string" },
+        "unit": { "type": "string" },
+        "stockQuantity": { "type": "number" },
+        "costPrice": { "type": "number" }
+      },
+      "required": ["id", "code", "name", "unit"]
+    },
+    "StockImportReceipt": {
+      "title": "StockImportReceipt",
+      "description": "Warehouse stock import receipt",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "receiptNumber": { "type": "string" },
+        "date": { "type": "string" },
+        "supplier": { "type": "string" },
+        "items": { "type": "array" }
+      },
+      "required": ["id", "receiptNumber", "date"]
+    },
+    "StudioCombo": {
+      "title": "StudioCombo",
+      "description": "Product combo preset tailored for specific studios or general use",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "studioName": { "type": "string" },
+        "customerId": { "type": "string" },
+        "description": { "type": "string" },
+        "items": { "type": "array" }
+      },
+      "required": ["id", "name", "items"]
+    }
+  },
+  "firestore": {
+    "/settings/workshop_info": {
+      "schema": "WorkshopInfo",
+      "description": "Workshop configuration"
+    },
+    "/products/{productId}": {
+      "schema": "Product",
+      "description": "Collection of products"
+    },
+    "/customers/{customerId}": {
+      "schema": "Customer",
+      "description": "Collection of customers and studios"
+    },
+    "/orders/{orderId}": {
+      "schema": "Order",
+      "description": "Collection of orders"
+    },
+    "/materials/{materialId}": {
+      "schema": "Material",
+      "description": "Collection of inventory materials"
+    },
+    "/purchases/{purchaseId}": {
+      "schema": "StockImportReceipt",
+      "description": "Collection of warehouse purchase receipts and inventory invoices"
+    },
+    "/stockImports/{receiptId}": {
+      "schema": "StockImportReceipt",
+      "description": "Collection of stock import receipts"
+    },
+    "/combos/{comboId}": {
+      "schema": "StudioCombo",
+      "description": "Collection of product combos"
+    },
+    "/settings/{settingId}": {
+      "description": "Application settings and quick suggestion presets"
+    }
+  }
+}

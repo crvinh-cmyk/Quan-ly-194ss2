@@ -1,0 +1,8 @@
+{
+  "name": "Remix 194 Print Manager",
+  "description": "Professional print shop management app with automated product entry, invoice calculation, and comprehensive monthly and yearly financial reporting.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
