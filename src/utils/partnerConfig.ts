@@ -27,14 +27,28 @@ export function isPartnerMode(): boolean {
     return false;
   }
 
-  // 1. Kiểm tra qua biến môi trường Vite / Next.js
+  // TRONG MÔI TRƯỜNG PHÁT TRIỂN / XEM TRƯỚC (PREVIEW) CỦA AI STUDIO:
+  // Luôn luôn trả về false (bất kể tham số URL hay biến môi trường nào),
+  // đảm bảo màn hình preview luôn luôn hiển thị bản chính gốc 100% và KHÔNG BAO GIỜ hiện tab "Theo dõi doanh thu mẫu s1a".
+  const hostname = window.location.hostname.toLowerCase();
+  if (
+    hostname.includes('run.app') ||
+    hostname.includes('localhost') ||
+    hostname.includes('127.0.0.1') ||
+    hostname.includes('aistudio') ||
+    hostname.includes('google') ||
+    hostname.includes('webcontainer')
+  ) {
+    return false;
+  }
+
+  // Ở môi trường triển khai độc lập (Vercel / Netlify / Domain riêng cho bản phụ):
+  // Chỉ bật khi biến môi trường VITE_IS_PARTNER_VIEW hoặc NEXT_PUBLIC_IS_PARTNER_VIEW được cấu hình là 'true'.
   let envVitePartner: any = undefined;
-  let envVitePartnerAlt: any = undefined;
   let envNextPartner: any = undefined;
 
   try {
     envVitePartner = import.meta.env?.VITE_IS_PARTNER_VIEW;
-    envVitePartnerAlt = import.meta.env?.VITE_PARTNER_MODE;
     envNextPartner = (import.meta.env as any)?.NEXT_PUBLIC_IS_PARTNER_VIEW;
   } catch {
     // Tránh lỗi truy cập biến môi trường
@@ -52,45 +66,10 @@ export function isPartnerMode(): boolean {
   if (
     envVitePartner === 'true' ||
     envVitePartner === true ||
-    envVitePartnerAlt === 'true' ||
-    envVitePartnerAlt === true ||
     envNextPartner === 'true' ||
     envNextPartner === true
   ) {
     return true;
-  }
-
-  // 2. Kiểm tra qua URL query parameter (?partner=true hoặc ?mode=partner hoặc ?ctv=true) để linh hoạt test nhanh
-  try {
-    const searchParams = new URLSearchParams(window.location.search);
-    const partnerParam = searchParams.get('partner') || searchParams.get('mode') || searchParams.get('role') || searchParams.get('ctv');
-    if (
-      partnerParam === 'true' ||
-      partnerParam === '1' ||
-      partnerParam === 'partner' ||
-      partnerParam === 'ctv'
-    ) {
-      sessionStorage.setItem('quanly194_partner_mode', 'true');
-      return true;
-    }
-
-    if (searchParams.get('partner') === 'false' || searchParams.get('mode') === 'admin') {
-      sessionStorage.removeItem('quanly194_partner_mode');
-      return false;
-    }
-
-    // Kiểm tra session hiện tại nếu người dùng đã vào qua link đối tác trước đó
-    if (sessionStorage.getItem('quanly194_partner_mode') === 'true') {
-      return true;
-    }
-
-    // 3. Kiểm tra qua domain / subdomain (VD: partner.domain.com hoặc ctv.domain.com)
-    const host = window.location.hostname.toLowerCase();
-    if (host.startsWith('partner.') || host.startsWith('ctv.') || host.includes('-partner')) {
-      return true;
-    }
-  } catch {
-    // Tránh lỗi môi trường SSR hoặc testing
   }
 
   return false;

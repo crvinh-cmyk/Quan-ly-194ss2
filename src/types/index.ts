@@ -268,5 +268,25 @@ export interface InkImportRecord {
  */
 export type MonthlyRevenueDeductions = Record<string, number>;
 
+/**
+ * Chỉnh sửa hoặc bổ sung doanh thu thủ công trên Sổ theo dõi doanh thu mẫu S1a
+ */
+export interface S1aDayOverride {
+  explanation?: string; // Diễn giải tùy chỉnh
+  amount?: number;      // Số tiền ghi đè (VNĐ)
+  isEdited?: boolean;
+}
+
+export interface S1aManualEntry {
+  id: string;
+  date: string;         // YYYY-MM-DD
+  explanation: string;  // Diễn giải (VD: In ảnh và đóng khung ảnh...)
+  amount: number;       // Số tiền (VNĐ)
+  createdAt: string;
+  notes?: string;
+  userId?: string;
+  createdBy?: string;
+}
+
 
 

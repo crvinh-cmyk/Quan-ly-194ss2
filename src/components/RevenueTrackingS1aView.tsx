@@ -1,7 +1,14 @@
-import React, { useState, useMemo, useRef } from 'react';
-import { Order, WorkshopInfo } from '../types';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
+import { Order, WorkshopInfo, S1aDayOverride, S1aManualEntry } from '../types';
 import { formatCurrency, formatDateVN } from '../utils/formatters';
 import { getRevenueMultiplier } from '../utils/partnerConfig';
+import {
+  subscribeS1aOverrides,
+  saveS1aOverridesToFirestore,
+  subscribeS1aManualEntries,
+  saveS1aManualEntriesToFirestore,
+  AuthUserContext
+} from '../services/firestoreService';
 import {
   Printer,
   Download,
@@ -14,25 +21,147 @@ import {
   ChevronRight,
   Info,
   Sparkles,
-  Loader2
+  Loader2,
+  Edit2,
+  PlusCircle,
+  Trash2,
+  Save,
+  X,
+  RotateCcw
 } from 'lucide-react';
 import html2canvas from 'html2canvas';
 
 interface RevenueTrackingS1aViewProps {
   orders: Order[];
   workshop: WorkshopInfo;
+  userContext?: AuthUserContext | null;
+}
+
+/**
+ * Chuyển đổi an toàn mã màu oklch(...) sang RGB / HEX
+ * để html2canvas không bị crash (do html2canvas chưa hỗ trợ oklch của CSS Color Module 4)
+ */
+function convertOklchToRgb(colorStr: string): string {
+  if (!colorStr || typeof colorStr !== 'string') return colorStr;
+  if (!colorStr.includes('oklch') && !colorStr.includes('lab') && !colorStr.includes('color(')) {
+    return colorStr;
+  }
+
+  try {
+    const c = document.createElement('canvas');
+    c.width = 1;
+    c.height = 1;
+    const ctx = c.getContext('2d');
+    if (ctx) {
+      ctx.fillStyle = '#000000';
+      ctx.fillStyle = colorStr;
+      const res = ctx.fillStyle;
+      if (res && !res.includes('oklch') && !res.includes('lab')) {
+        return res;
+      }
+    }
+  } catch {
+    // fallback
+  }
+
+  const lower = colorStr.toLowerCase();
+  if (lower.includes('slate-950')) return '#020617';
+  if (lower.includes('slate-900')) return '#0f172a';
+  if (lower.includes('slate-800')) return '#1e293b';
+  if (lower.includes('slate-700')) return '#334155';
+  if (lower.includes('slate-600')) return '#475569';
+  if (lower.includes('slate-500')) return '#64748b';
+  if (lower.includes('slate-400')) return '#94a3b8';
+  if (lower.includes('slate-300')) return '#cbd5e1';
+  if (lower.includes('slate-200')) return '#e2e8f0';
+  if (lower.includes('slate-100')) return '#f1f5f9';
+  if (lower.includes('amber-500')) return '#f59e0b';
+  if (lower.includes('amber-600')) return '#d97706';
+  if (lower.includes('amber-50')) return '#fffbeb';
+  return '#0f172a';
+}
+
+function sanitizeDocumentOklchColors(clonedDoc: Document, clonedEl: HTMLElement) {
+  try {
+    const styleTags = clonedDoc.querySelectorAll('style');
+    styleTags.forEach((styleTag) => {
+      if (styleTag.textContent && (styleTag.textContent.includes('oklch') || styleTag.textContent.includes('lab('))) {
+        styleTag.textContent = styleTag.textContent.replace(/oklch\([^)]+\)/gi, (match) => {
+          return convertOklchToRgb(match);
+        });
+      }
+    });
+  } catch {
+    // ignore
+  }
+
+  try {
+    const allElements = [clonedEl, ...Array.from(clonedEl.getElementsByTagName('*'))] as HTMLElement[];
+    const colorProps = [
+      'color',
+      'background-color',
+      'border-color',
+      'border-top-color',
+      'border-right-color',
+      'border-bottom-color',
+      'border-left-color'
+    ];
+
+    allElements.forEach((el) => {
+      if (!el || !el.style) return;
+      try {
+        const computed = window.getComputedStyle(el);
+        colorProps.forEach((prop) => {
+          const val = computed.getPropertyValue(prop);
+          if (val && (val.includes('oklch') || val.includes('lab') || val.includes('color('))) {
+            const safe = convertOklchToRgb(val);
+            el.style.setProperty(prop, safe, 'important');
+          }
+        });
+      } catch {
+        // ignore
+      }
+    });
+  } catch {
+    // ignore
+  }
 }
 
 export const RevenueTrackingS1aView: React.FC<RevenueTrackingS1aViewProps> = ({
   orders,
-  workshop
+  workshop,
+  userContext
 }) => {
   const currentDate = new Date();
   const [selectedYear, setSelectedYear] = useState<number>(currentDate.getFullYear());
   const [selectedMonth, setSelectedMonth] = useState<number>(currentDate.getMonth() + 1); // 1-12
   const [isExporting, setIsExporting] = useState<boolean>(false);
   const [exportSuccess, setExportSuccess] = useState<boolean>(false);
+  const [exportError, setExportError] = useState<string | null>(null);
   const printAreaRef = useRef<HTMLDivElement>(null);
+
+  // Sync state for overrides and manual entries
+  const [overrides, setOverrides] = useState<Record<string, S1aDayOverride>>({});
+  const [manualEntries, setManualEntries] = useState<S1aManualEntry[]>([]);
+
+  // Modal / Form states
+  const [editingDay, setEditingDay] = useState<{
+    dateKey: string;
+    dayNumber: number;
+    explanation: string;
+    amount: number;
+    hasOriginal: boolean;
+    originalAmount: number;
+    originalExplanation: string;
+  } | null>(null);
+
+  const [showAddManualModal, setShowAddManualModal] = useState<boolean>(false);
+  const [manualFormDate, setManualFormDate] = useState<string>(() => {
+    const mStr = String(currentDate.getMonth() + 1).padStart(2, '0');
+    return `${currentDate.getFullYear()}-${mStr}-01`;
+  });
+  const [manualFormExplanation, setManualFormExplanation] = useState<string>('In ảnh và đóng khung ảnh');
+  const [manualFormAmount, setManualFormAmount] = useState<string>('');
 
   // Fixed metadata according to specifications & Circular 152/2025/TT-BTC
   const businessName = 'Tiệm in 194';
@@ -40,23 +169,41 @@ export const RevenueTrackingS1aView: React.FC<RevenueTrackingS1aViewProps> = ({
   const taxCode = ''; // Để trống nếu chưa có
   const currencyUnit = 'VNĐ';
 
-  const multiplier = getRevenueMultiplier(); // Default 0.8 in partner mode
+  const multiplier = getRevenueMultiplier(); // Hệ số doanh thu đối tác
+
+  // 1. Subscribe to Firestore overrides and manual entries
+  useEffect(() => {
+    const unsubOverrides = subscribeS1aOverrides((data) => {
+      setOverrides(data || {});
+    });
+    const unsubManual = subscribeS1aManualEntries((data) => {
+      setManualEntries(data || []);
+    });
+
+    return () => {
+      unsubOverrides();
+      unsubManual();
+    };
+  }, []);
+
+  // Update default manual form date when month/year changes
+  useEffect(() => {
+    const paddedMonth = String(selectedMonth).padStart(2, '0');
+    setManualFormDate(`${selectedYear}-${paddedMonth}-01`);
+  }, [selectedYear, selectedMonth]);
 
   // Calculate days in selected month
   const daysInMonth = useMemo(() => {
     return new Date(selectedYear, selectedMonth, 0).getDate();
   }, [selectedYear, selectedMonth]);
 
-  // Aggregate daily revenue from main orders
-  // - Applies 0.8 multiplier (or configured multiplier)
-  // - Handles multiple orders per day
+  // Aggregate daily revenue from main orders, combined with overrides and manual entries
   const dailyData = useMemo(() => {
     // Group orders by day of month (1 to daysInMonth)
     const dailyMap: Record<number, { originalTotal: number; ordersCount: number }> = {};
 
     orders.forEach(order => {
       if (!order.date) return;
-      // Filter out cancelled orders if any
       if (order.status === 'cancelled') return;
 
       const [yStr, mStr, dStr] = order.date.split('-');
@@ -68,10 +215,27 @@ export const RevenueTrackingS1aView: React.FC<RevenueTrackingS1aViewProps> = ({
         if (!dailyMap[d]) {
           dailyMap[d] = { originalTotal: 0, ordersCount: 0 };
         }
-        // subtotal is revenue before discount, or total order revenue (subtotal - discount)
         const orderRev = Math.max(0, (order.subtotal || 0) - (order.discount || 0));
         dailyMap[d].originalTotal += orderRev;
         dailyMap[d].ordersCount += 1;
+      }
+    });
+
+    // Also collect manual entries for this month
+    const manualMap: Record<number, { amount: number; explanation: string; entries: S1aManualEntry[] }> = {};
+    manualEntries.forEach(entry => {
+      if (!entry.date) return;
+      const [yStr, mStr, dStr] = entry.date.split('-');
+      const y = parseInt(yStr, 10);
+      const m = parseInt(mStr, 10);
+      const d = parseInt(dStr, 10);
+
+      if (y === selectedYear && m === selectedMonth && d >= 1 && d <= 31) {
+        if (!manualMap[d]) {
+          manualMap[d] = { amount: 0, explanation: entry.explanation, entries: [] };
+        }
+        manualMap[d].amount += entry.amount || 0;
+        manualMap[d].entries.push(entry);
       }
     });
 
@@ -79,25 +243,53 @@ export const RevenueTrackingS1aView: React.FC<RevenueTrackingS1aViewProps> = ({
     let monthlyTotal = 0;
 
     for (let day = 1; day <= daysInMonth; day++) {
-      const dayData = dailyMap[day];
-      const hasRevenue = dayData && dayData.originalTotal > 0;
-      
-      // Calculate discounted revenue: multiply by 0.8 and round
-      const discountedAmount = hasRevenue ? Math.round(dayData.originalTotal * multiplier) : 0;
-      monthlyTotal += discountedAmount;
-
       const paddedDay = day.toString().padStart(2, '0');
       const paddedMonth = selectedMonth.toString().padStart(2, '0');
+      const dateKey = `${selectedYear}-${paddedMonth}-${paddedDay}`;
       const dateString = `${paddedDay}/${paddedMonth}/${selectedYear}`;
+
+      const orderData = dailyMap[day];
+      const manualData = manualMap[day];
+
+      const baseOrdersRevenue = orderData && orderData.originalTotal > 0
+        ? Math.round(orderData.originalTotal * multiplier)
+        : 0;
+
+      const baseManualRevenue = manualData ? manualData.amount : 0;
+      const totalBaseRevenue = baseOrdersRevenue + baseManualRevenue;
+
+      let defaultExplanation = 'Nghỉ bán không phát sinh doanh thu';
+      if (manualData && manualData.amount > 0) {
+        defaultExplanation = manualData.explanation || 'In ảnh và đóng khung ảnh';
+      } else if (orderData && orderData.originalTotal > 0) {
+        defaultExplanation = 'In ảnh và đóng khung ảnh';
+      }
+
+      // Check if there is an explicit override for this day
+      const override = overrides[dateKey];
+      const isOverridden = !!(override && override.isEdited);
+
+      const finalAmount = isOverridden && typeof override.amount === 'number'
+        ? override.amount
+        : totalBaseRevenue;
+
+      const finalExplanation = isOverridden && override.explanation
+        ? override.explanation
+        : defaultExplanation;
+
+      monthlyTotal += finalAmount;
 
       rows.push({
         dayNumber: day,
+        dateKey,
         dateString,
-        hasRevenue,
-        explanation: hasRevenue ? 'In ảnh và đóng khung ảnh' : 'Nghỉ bán không phát sinh doanh thu',
-        amount: discountedAmount,
-        originalAmount: hasRevenue ? dayData.originalTotal : 0,
-        ordersCount: hasRevenue ? dayData.ordersCount : 0
+        hasRevenue: finalAmount > 0,
+        explanation: finalExplanation,
+        amount: finalAmount,
+        isOverridden,
+        originalAmount: totalBaseRevenue,
+        originalExplanation: defaultExplanation,
+        manualEntriesCount: manualData ? manualData.entries.length : 0
       });
     }
 
@@ -105,38 +297,44 @@ export const RevenueTrackingS1aView: React.FC<RevenueTrackingS1aViewProps> = ({
       rows,
       monthlyTotal
     };
-  }, [orders, selectedYear, selectedMonth, daysInMonth, multiplier]);
+  }, [orders, selectedYear, selectedMonth, daysInMonth, multiplier, overrides, manualEntries]);
 
   // Handle direct print
   const handlePrint = () => {
     window.print();
   };
 
-  // Handle high quality image export (20x30 cm ratio: 2:3 aspect ratio)
+  // Handle high quality image export (20x30 cm ratio: 2:3 aspect ratio, 300 DPI high resolution)
   const handleExportImage = async () => {
     if (!printAreaRef.current) return;
     setIsExporting(true);
     setExportSuccess(false);
+    setExportError(null);
 
     try {
-      // Allow browser fonts & layout to be completely ready
       if (document.fonts) {
         await document.fonts.ready;
       }
 
-      // 20x30 cm portrait standard at 150-200 DPI gives ~1600 x 2400 px or scale 2
+      // Khổ 20x30 cm ở chuẩn 300 DPI tương đương khoảng 2362 x 3543 pixels.
+      // Chúng ta sử dụng scale = 3 để đảm bảo độ phân giải siêu nét (Ultra High Resolution)
       const canvas = await html2canvas(printAreaRef.current, {
-        scale: 2,
+        scale: 3,
         useCORS: true,
+        allowTaint: true,
         logging: false,
         backgroundColor: '#ffffff',
-        windowWidth: 1000
+        onclone: (clonedDoc, clonedEl) => {
+          sanitizeDocumentOklchColors(clonedDoc, clonedEl);
+        }
       });
 
       const paddedMonth = selectedMonth.toString().padStart(2, '0');
       const fileName = `So_Theo_Doi_Doanh_Thu_Mauso_S1a_TiemIn194_Thang_${paddedMonth}_${selectedYear}.jpg`;
 
-      const dataUrl = canvas.toDataURL('image/jpeg', 0.95);
+      // Xuất file ảnh JPEG chất lượng cao nhất (0.96)
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.96);
+      
       const link = document.createElement('a');
       link.download = fileName;
       link.href = dataUrl;
@@ -145,15 +343,101 @@ export const RevenueTrackingS1aView: React.FC<RevenueTrackingS1aViewProps> = ({
       document.body.removeChild(link);
 
       setExportSuccess(true);
-      setTimeout(() => setExportSuccess(false), 4000);
-    } catch (err) {
+      setTimeout(() => setExportSuccess(false), 4500);
+    } catch (err: any) {
       console.error('Lỗi khi xuất ảnh mẫu S1a:', err);
+      setExportError(err?.message || 'Không thể tạo file ảnh. Vui lòng thử lại hoặc dùng tính năng In Sổ.');
+      setTimeout(() => setExportError(null), 5000);
     } finally {
       setIsExporting(false);
     }
   };
 
-  const currentYearOptions = [selectedYear - 1, selectedYear, selectedYear + 1];
+  // Open editor for a specific row
+  const handleStartEditRow = (row: typeof dailyData.rows[0]) => {
+    setEditingDay({
+      dateKey: row.dateKey,
+      dayNumber: row.dayNumber,
+      explanation: row.explanation,
+      amount: row.amount,
+      hasOriginal: row.originalAmount > 0,
+      originalAmount: row.originalAmount,
+      originalExplanation: row.originalExplanation
+    });
+  };
+
+  // Save row override
+  const handleSaveRowOverride = async () => {
+    if (!editingDay) return;
+    const newOverrides = {
+      ...overrides,
+      [editingDay.dateKey]: {
+        explanation: editingDay.explanation.trim() || 'Nghỉ bán không phát sinh doanh thu',
+        amount: Math.max(0, Number(editingDay.amount) || 0),
+        isEdited: true
+      }
+    };
+    setOverrides(newOverrides);
+    setEditingDay(null);
+    await saveS1aOverridesToFirestore(newOverrides, userContext);
+  };
+
+  // Reset row to automatic calculation
+  const handleResetRowOverride = async (dateKey: string) => {
+    const newOverrides = { ...overrides };
+    delete newOverrides[dateKey];
+    setOverrides(newOverrides);
+    if (editingDay?.dateKey === dateKey) {
+      setEditingDay(null);
+    }
+    await saveS1aOverridesToFirestore(newOverrides, userContext);
+  };
+
+  // Add manual entry (e.g., historical revenue before software usage)
+  const handleAddManualEntrySubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleanAmount = parseInt(manualFormAmount.replace(/\D/g, ''), 10);
+    if (isNaN(cleanAmount) || cleanAmount <= 0) {
+      alert('Vui lòng nhập số tiền hợp lệ');
+      return;
+    }
+    if (!manualFormDate) {
+      alert('Vui lòng chọn ngày phát sinh');
+      return;
+    }
+
+    const newEntry: S1aManualEntry = {
+      id: `s1a_manual_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      date: manualFormDate,
+      explanation: manualFormExplanation.trim() || 'In ảnh và đóng khung ảnh',
+      amount: cleanAmount,
+      createdAt: new Date().toISOString()
+    };
+
+    const updatedList = [newEntry, ...manualEntries];
+    setManualEntries(updatedList);
+    setShowAddManualModal(false);
+    setManualFormAmount('');
+
+    await saveS1aManualEntriesToFirestore(updatedList, userContext);
+  };
+
+  // Delete a manual entry
+  const handleDeleteManualEntry = async (entryId: string) => {
+    if (!window.confirm('Bạn có chắc chắn muốn xóa dòng dữ liệu bổ sung này không?')) return;
+    const updatedList = manualEntries.filter(item => item.id !== entryId);
+    setManualEntries(updatedList);
+    await saveS1aManualEntriesToFirestore(updatedList, userContext);
+  };
+
+  // Filter manual entries for selected month for review list
+  const currentMonthManualEntries = useMemo(() => {
+    return manualEntries.filter(entry => {
+      if (!entry.date) return false;
+      const [y, m] = entry.date.split('-');
+      return parseInt(y, 10) === selectedYear && parseInt(m, 10) === selectedMonth;
+    });
+  }, [manualEntries, selectedYear, selectedMonth]);
 
   return (
     <div className="space-y-6">
@@ -173,12 +457,23 @@ export const RevenueTrackingS1aView: React.FC<RevenueTrackingS1aViewProps> = ({
               Sổ Theo Dõi Doanh Thu Bán Hàng & Dịch Vụ
             </h2>
             <p className="text-xs text-slate-500 mt-0.5">
-              Tự động tổng hợp dữ liệu đơn hàng từng ngày từ Firestore, áp dụng hệ số đối tác (-20%) và định dạng chuẩn khổ giấy 20x30 cm
+              Hệ thống quản lý và xuất sổ theo dõi doanh thu chuẩn Thông tư 152/2025/TT-BTC khổ in 20x30 cm
             </p>
           </div>
 
           {/* Action Buttons */}
-          <div className="flex items-center gap-2.5 shrink-0">
+          <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+            {/* Chèn thêm dữ liệu thủ công */}
+            <button
+              onClick={() => setShowAddManualModal(true)}
+              className="flex items-center gap-2 px-3.5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-sm transition cursor-pointer"
+              title="Thêm doanh thu phát sinh thủ công hoặc ngày trước khi dùng phần mềm"
+            >
+              <PlusCircle className="w-4 h-4 text-emerald-200" />
+              <span>Chèn doanh thu thủ công</span>
+            </button>
+
+            {/* In sổ */}
             <button
               onClick={handlePrint}
               className="flex items-center gap-2 px-4 py-2.5 bg-slate-800 hover:bg-slate-900 text-white font-bold text-xs rounded-xl shadow-sm transition cursor-pointer"
@@ -188,16 +483,17 @@ export const RevenueTrackingS1aView: React.FC<RevenueTrackingS1aViewProps> = ({
               <span>In Sổ S1a</span>
             </button>
 
+            {/* Xuất file ảnh 20x30 cm */}
             <button
               onClick={handleExportImage}
               disabled={isExporting}
               className="flex items-center gap-2 px-4 py-2.5 bg-amber-500 hover:bg-amber-600 text-slate-950 font-black text-xs rounded-xl shadow-md shadow-amber-500/20 transition cursor-pointer disabled:opacity-60"
-              title="Xuất file ảnh độ phân giải cao tỉ lệ 20x30 cm"
+              title="Xuất file ảnh độ phân giải cao 300 DPI tỉ lệ 20x30 cm"
             >
               {isExporting ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin text-slate-950" />
-                  <span>Đang xuất ảnh...</span>
+                  <span>Đang xuất ảnh 300 DPI...</span>
                 </>
               ) : (
                 <>
@@ -244,7 +540,7 @@ export const RevenueTrackingS1aView: React.FC<RevenueTrackingS1aViewProps> = ({
             </select>
           </div>
 
-          {/* Quick Summary Pill */}
+          {/* Quick Summary Pill & Feedback Messages */}
           <div className="flex items-center gap-3">
             {exportSuccess && (
               <span className="flex items-center gap-1.5 text-xs font-bold text-emerald-700 bg-emerald-50 px-3 py-1.5 rounded-xl border border-emerald-200 animate-in fade-in">
@@ -252,9 +548,15 @@ export const RevenueTrackingS1aView: React.FC<RevenueTrackingS1aViewProps> = ({
                 Đã tải file ảnh sổ 20x30 cm thành công!
               </span>
             )}
+            {exportError && (
+              <span className="flex items-center gap-1.5 text-xs font-bold text-rose-700 bg-rose-50 px-3 py-1.5 rounded-xl border border-rose-200 animate-in fade-in">
+                <AlertCircle className="w-4 h-4 text-rose-600" />
+                {exportError}
+              </span>
+            )}
             <div className="text-right">
               <span className="text-[11px] text-slate-400 font-medium block">
-                Tổng doanh thu tháng {selectedMonth}/{selectedYear} (-20%):
+                Tổng doanh thu tháng {selectedMonth}/{selectedYear}:
               </span>
               <span className="text-base font-black text-amber-600 font-mono">
                 {formatCurrency(dailyData.monthlyTotal)}
@@ -263,14 +565,231 @@ export const RevenueTrackingS1aView: React.FC<RevenueTrackingS1aViewProps> = ({
           </div>
         </div>
 
-        {/* Note info banner */}
-        <div className="flex items-start gap-2.5 p-3 rounded-xl bg-amber-50/70 border border-amber-200/80 text-[11px] text-amber-900 leading-relaxed">
-          <Info className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-          <div>
-            <strong>Quy chuẩn mẫu sổ S1a (TT 152/2025/TT-BTC):</strong> Bảng kê chi tiết từng ngày từ ngày 01 đến ngày cuối cùng của tháng. Ngày có đơn hàng tự động diễn giải <em>"In ảnh và đóng khung ảnh"</em> với số tiền đã trừ 20%; ngày không phát sinh tự động ghi <em>"Nghỉ bán không phát sinh doanh thu"</em>. Khung hiển thị bên dưới chuẩn tỉ lệ khổ in 20x30 cm.
+        {/* Danh sách các khoản chèn thủ công trong tháng (nếu có) */}
+        {currentMonthManualEntries.length > 0 && (
+          <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
+                <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
+                Các khoản doanh thu bổ sung thủ công trong tháng ({currentMonthManualEntries.length}):
+              </span>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {currentMonthManualEntries.map((item) => (
+                <div
+                  key={item.id}
+                  className="flex items-center gap-2 bg-white px-2.5 py-1 rounded-lg border border-slate-200 text-xs shadow-2xs"
+                >
+                  <span className="font-mono font-bold text-slate-800">{formatDateVN(item.date)}:</span>
+                  <span className="text-slate-600">{item.explanation}</span>
+                  <span className="font-mono font-black text-emerald-600">+{formatCurrency(item.amount)}</span>
+                  <button
+                    onClick={() => handleDeleteManualEntry(item.id)}
+                    className="text-slate-400 hover:text-rose-600 transition cursor-pointer"
+                    title="Xóa khoản này"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* MODAL: CHỈNH SỬA DÒNG DOANH THU TRONG NGÀY */}
+      {editingDay && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs animate-in fade-in duration-150 no-print">
+          <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 max-w-md w-full p-5 space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-lg bg-amber-500/10 text-amber-600 flex items-center justify-center font-bold">
+                  <Edit2 className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-extrabold text-slate-900">
+                    Sửa dữ liệu ngày {editingDay.dayNumber}/{selectedMonth}/{selectedYear}
+                  </h3>
+                  <p className="text-[11px] text-slate-500">
+                    Chỉnh sửa diễn giải hoặc số tiền trên sổ S1a
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setEditingDay(null)}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Diễn giải:
+                </label>
+                <input
+                  type="text"
+                  value={editingDay.explanation}
+                  onChange={(e) => setEditingDay({ ...editingDay, explanation: e.target.value })}
+                  placeholder="In ảnh và đóng khung ảnh"
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-amber-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Số tiền doanh thu (VNĐ):
+                </label>
+                <input
+                  type="number"
+                  value={editingDay.amount}
+                  onChange={(e) => setEditingDay({ ...editingDay, amount: Number(e.target.value) })}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-amber-500"
+                  min="0"
+                  step="1000"
+                />
+              </div>
+
+              {/* Thông tin số liệu tự động ban đầu */}
+              <div className="p-2.5 bg-slate-50 rounded-xl border border-slate-200 text-[11px] text-slate-600 space-y-1">
+                <p>
+                  <strong>Số liệu tự động từ hệ thống:</strong> {formatCurrency(editingDay.originalAmount)}
+                </p>
+                <p>
+                  <strong>Diễn giải mặc định:</strong> {editingDay.originalExplanation}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between pt-2">
+              <button
+                type="button"
+                onClick={() => handleResetRowOverride(editingDay.dateKey)}
+                className="flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-slate-600 hover:text-rose-600 rounded-xl transition cursor-pointer"
+                title="Khôi phục lại số liệu tự động từ hệ thống"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>Khôi phục mặc định</span>
+              </button>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setEditingDay(null)}
+                  className="px-3 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-xl transition cursor-pointer"
+                >
+                  Hủy
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveRowOverride}
+                  className="flex items-center gap-1.5 px-4 py-2 bg-amber-500 hover:bg-amber-600 text-slate-950 font-black text-xs rounded-xl shadow-sm transition cursor-pointer"
+                >
+                  <Save className="w-3.5 h-3.5" />
+                  <span>Lưu thay đổi</span>
+                </button>
+              </div>
+            </div>
           </div>
         </div>
-      </div>
+      )}
+
+      {/* MODAL: BỔ SUNG DOANH THU THỦ CÔNG */}
+      {showAddManualModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs animate-in fade-in duration-150 no-print">
+          <form
+            onSubmit={handleAddManualEntrySubmit}
+            className="bg-white rounded-2xl shadow-2xl border border-slate-200 max-w-md w-full p-5 space-y-4"
+          >
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-lg bg-emerald-500/10 text-emerald-600 flex items-center justify-center font-bold">
+                  <PlusCircle className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-extrabold text-slate-900">
+                    Bổ sung doanh thu thủ công
+                  </h3>
+                  <p className="text-[11px] text-slate-500">
+                    Nhập ngày phát sinh trước thời điểm dùng app hoặc khoản thu ngoài
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowAddManualModal(false)}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Ngày ghi sổ:
+                </label>
+                <input
+                  type="date"
+                  value={manualFormDate}
+                  onChange={(e) => setManualFormDate(e.target.value)}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Diễn giải hoạt động:
+                </label>
+                <input
+                  type="text"
+                  value={manualFormExplanation}
+                  onChange={(e) => setManualFormExplanation(e.target.value)}
+                  placeholder="In ảnh và đóng khung ảnh"
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Số tiền doanh thu (VNĐ):
+                </label>
+                <input
+                  type="text"
+                  value={manualFormAmount}
+                  onChange={(e) => {
+                    const raw = e.target.value.replace(/\D/g, '');
+                    setManualFormAmount(raw ? Number(raw).toLocaleString('vi-VN') : '');
+                  }}
+                  placeholder="Ví dụ: 1.500.000"
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold font-mono text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  required
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowAddManualModal(false)}
+                className="px-3 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-xl transition cursor-pointer"
+              >
+                Hủy bỏ
+              </button>
+              <button
+                type="submit"
+                className="flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-sm transition cursor-pointer"
+              >
+                <Save className="w-3.5 h-3.5" />
+                <span>Thêm vào sổ S1a</span>
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
 
       {/* S1A SHEET CONTAINER - STANDARD 20x30 CM CANVAS */}
       <div className="flex justify-center overflow-x-auto pb-10">
@@ -278,7 +797,7 @@ export const RevenueTrackingS1aView: React.FC<RevenueTrackingS1aViewProps> = ({
           ref={printAreaRef}
           className="s1a-sheet bg-white text-slate-900 p-8 sm:p-10 shadow-xl border border-slate-300 w-full max-w-[840px] font-sans printable-area transition-all"
           style={{
-            minHeight: '1200px', // Standard 20x30 aspect ratio (2:3)
+            minHeight: '1200px', // Chuẩn tỉ lệ khổ 20x30 (2:3)
             boxSizing: 'border-box'
           }}
         >
@@ -351,9 +870,9 @@ export const RevenueTrackingS1aView: React.FC<RevenueTrackingS1aViewProps> = ({
                 {dailyData.rows.map((row, idx) => (
                   <tr
                     key={row.dayNumber}
-                    className={`hover:bg-slate-50 transition-colors ${
+                    className={`hover:bg-slate-50 transition-colors group ${
                       row.hasRevenue ? 'bg-amber-50/20' : ''
-                    }`}
+                    } ${row.isOverridden ? 'bg-blue-50/20' : ''}`}
                   >
                     {/* STT */}
                     <td className="border border-slate-900 p-1.5 text-center text-slate-600 font-mono text-[11px]">
@@ -366,10 +885,22 @@ export const RevenueTrackingS1aView: React.FC<RevenueTrackingS1aViewProps> = ({
                     </td>
 
                     {/* Cột B: Diễn giải */}
-                    <td className="border border-slate-900 p-1.5 text-slate-900">
-                      <span className={row.hasRevenue ? 'font-bold text-slate-900' : 'text-slate-500 italic'}>
-                        {row.explanation}
-                      </span>
+                    <td className="border border-slate-900 p-1.5 text-slate-900 relative">
+                      <div className="flex items-center justify-between gap-1">
+                        <span className={row.hasRevenue ? 'font-bold text-slate-900' : 'text-slate-500 italic'}>
+                          {row.explanation}
+                        </span>
+
+                        {/* Edit pencil icon (only visible on screen hover) */}
+                        <button
+                          type="button"
+                          onClick={() => handleStartEditRow(row)}
+                          className="no-print opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-slate-200 text-slate-500 hover:text-amber-700 transition"
+                          title="Chỉnh sửa dòng này"
+                        >
+                          <Edit2 className="w-3 h-3" />
+                        </button>
+                      </div>
                     </td>
 
                     {/* Cột 1: Số tiền */}

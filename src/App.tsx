@@ -700,6 +700,7 @@ export default function App() {
           <RevenueTrackingS1aView
             orders={orders}
             workshop={workshop}
+            userContext={userContext}
           />
         )}
 

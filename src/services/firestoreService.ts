@@ -9,7 +9,7 @@ import {
   runTransaction
 } from 'firebase/firestore';
 import { db } from '../firebase/config';
-import { Product, Customer, Order, Material, StockImportReceipt, WorkshopInfo, StudioCombo, ProductCostItem, ProductCostMap, InkImportRecord, InkColorCode } from '../types';
+import { Product, Customer, Order, Material, StockImportReceipt, WorkshopInfo, StudioCombo, ProductCostItem, ProductCostMap, InkImportRecord, InkColorCode, S1aDayOverride, S1aManualEntry } from '../types';
 import { DEFAULT_WORKSHOP_INFO, DEFAULT_INK_IMPORTS } from '../data/initialData';
 
 // User info interface for tagging created/updated records
@@ -1020,6 +1020,128 @@ export async function saveRevenueDeductionsToFirestore(
     updatedAt: new Date().toISOString()
   }, user);
   await setDoc(docRef, cleanFirestoreObject(enriched), { merge: true });
+}
+
+// ==========================================
+// 12. SỔ THEO DÕI DOANH THU MẪU S1a (PARTNER)
+// ==========================================
+
+const LOCAL_STORAGE_S1A_OVERRIDES = 'xuongin194_s1a_overrides';
+const LOCAL_STORAGE_S1A_MANUAL = 'xuongin194_s1a_manual_entries';
+
+export function getLocalS1aOverrides(): Record<string, S1aDayOverride> {
+  try {
+    const raw = localStorage.getItem(LOCAL_STORAGE_S1A_OVERRIDES);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+export function saveLocalS1aOverrides(data: Record<string, S1aDayOverride>): void {
+  try {
+    localStorage.setItem(LOCAL_STORAGE_S1A_OVERRIDES, JSON.stringify(data));
+  } catch (e) {
+    console.error('Error saving local s1a overrides', e);
+  }
+}
+
+export function subscribeS1aOverrides(
+  onData: (overrides: Record<string, S1aDayOverride>) => void,
+  onError?: (err: Error) => void
+) {
+  const docRef = doc(db, COLLECTIONS.SETTINGS, 's1a_overrides');
+  return onSnapshot(docRef, (snapshot) => {
+    if (snapshot.exists()) {
+      const raw = snapshot.data();
+      const cleanData: Record<string, S1aDayOverride> = {};
+      Object.entries(raw).forEach(([k, v]) => {
+        if (k !== 'updatedAt' && k !== 'userId' && k !== 'createdBy' && typeof v === 'object' && v !== null) {
+          cleanData[k] = v as S1aDayOverride;
+        }
+      });
+      saveLocalS1aOverrides(cleanData);
+      onData(cleanData);
+    } else {
+      onData(getLocalS1aOverrides());
+    }
+  }, (err) => {
+    console.error('Firestore s1a_overrides onSnapshot error:', err);
+    onData(getLocalS1aOverrides());
+    if (onError) onError(err);
+  });
+}
+
+export async function saveS1aOverridesToFirestore(
+  overrides: Record<string, S1aDayOverride>,
+  user?: AuthUserContext | null
+): Promise<void> {
+  saveLocalS1aOverrides(overrides);
+  try {
+    const docRef = doc(db, COLLECTIONS.SETTINGS, 's1a_overrides');
+    const enriched = attachUserInfo({
+      ...overrides,
+      updatedAt: new Date().toISOString()
+    }, user);
+    await setDoc(docRef, cleanFirestoreObject(enriched), { merge: true });
+  } catch (e) {
+    console.error('Error syncing s1a_overrides to Firestore:', e);
+  }
+}
+
+export function getLocalS1aManualEntries(): S1aManualEntry[] {
+  try {
+    const raw = localStorage.getItem(LOCAL_STORAGE_S1A_MANUAL);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveLocalS1aManualEntries(entries: S1aManualEntry[]): void {
+  try {
+    localStorage.setItem(LOCAL_STORAGE_S1A_MANUAL, JSON.stringify(entries));
+  } catch (e) {
+    console.error('Error saving local s1a manual entries', e);
+  }
+}
+
+export function subscribeS1aManualEntries(
+  onData: (entries: S1aManualEntry[]) => void,
+  onError?: (err: Error) => void
+) {
+  const docRef = doc(db, COLLECTIONS.SETTINGS, 's1a_manual_entries');
+  return onSnapshot(docRef, (snapshot) => {
+    if (snapshot.exists()) {
+      const raw = snapshot.data();
+      const list = Array.isArray(raw?.entries) ? (raw.entries as S1aManualEntry[]) : [];
+      saveLocalS1aManualEntries(list);
+      onData(list);
+    } else {
+      onData(getLocalS1aManualEntries());
+    }
+  }, (err) => {
+    console.error('Firestore s1a_manual_entries onSnapshot error:', err);
+    onData(getLocalS1aManualEntries());
+    if (onError) onError(err);
+  });
+}
+
+export async function saveS1aManualEntriesToFirestore(
+  entries: S1aManualEntry[],
+  user?: AuthUserContext | null
+): Promise<void> {
+  saveLocalS1aManualEntries(entries);
+  try {
+    const docRef = doc(db, COLLECTIONS.SETTINGS, 's1a_manual_entries');
+    const enriched = attachUserInfo({
+      entries,
+      updatedAt: new Date().toISOString()
+    }, user);
+    await setDoc(docRef, cleanFirestoreObject(enriched), { merge: true });
+  } catch (e) {
+    console.error('Error syncing s1a_manual_entries to Firestore:', e);
+  }
 }
 
 
