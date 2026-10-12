@@ -9,6 +9,7 @@ import {
   saveS1aManualEntriesToFirestore,
   AuthUserContext
 } from '../services/firestoreService';
+import { generateS1aCanvas300DPI } from '../utils/exportS1aCanvas';
 import {
   Printer,
   Download,
@@ -29,102 +30,11 @@ import {
   X,
   RotateCcw
 } from 'lucide-react';
-import html2canvas from 'html2canvas';
 
 interface RevenueTrackingS1aViewProps {
   orders: Order[];
   workshop: WorkshopInfo;
   userContext?: AuthUserContext | null;
-}
-
-/**
- * Chuyển đổi an toàn mã màu oklch(...) sang RGB / HEX
- * để html2canvas không bị crash (do html2canvas chưa hỗ trợ oklch của CSS Color Module 4)
- */
-function convertOklchToRgb(colorStr: string): string {
-  if (!colorStr || typeof colorStr !== 'string') return colorStr;
-  if (!colorStr.includes('oklch') && !colorStr.includes('lab') && !colorStr.includes('color(')) {
-    return colorStr;
-  }
-
-  try {
-    const c = document.createElement('canvas');
-    c.width = 1;
-    c.height = 1;
-    const ctx = c.getContext('2d');
-    if (ctx) {
-      ctx.fillStyle = '#000000';
-      ctx.fillStyle = colorStr;
-      const res = ctx.fillStyle;
-      if (res && !res.includes('oklch') && !res.includes('lab')) {
-        return res;
-      }
-    }
-  } catch {
-    // fallback
-  }
-
-  const lower = colorStr.toLowerCase();
-  if (lower.includes('slate-950')) return '#020617';
-  if (lower.includes('slate-900')) return '#0f172a';
-  if (lower.includes('slate-800')) return '#1e293b';
-  if (lower.includes('slate-700')) return '#334155';
-  if (lower.includes('slate-600')) return '#475569';
-  if (lower.includes('slate-500')) return '#64748b';
-  if (lower.includes('slate-400')) return '#94a3b8';
-  if (lower.includes('slate-300')) return '#cbd5e1';
-  if (lower.includes('slate-200')) return '#e2e8f0';
-  if (lower.includes('slate-100')) return '#f1f5f9';
-  if (lower.includes('amber-500')) return '#f59e0b';
-  if (lower.includes('amber-600')) return '#d97706';
-  if (lower.includes('amber-50')) return '#fffbeb';
-  return '#0f172a';
-}
-
-function sanitizeDocumentOklchColors(clonedDoc: Document, clonedEl: HTMLElement) {
-  try {
-    const styleTags = clonedDoc.querySelectorAll('style');
-    styleTags.forEach((styleTag) => {
-      if (styleTag.textContent && (styleTag.textContent.includes('oklch') || styleTag.textContent.includes('lab('))) {
-        styleTag.textContent = styleTag.textContent.replace(/oklch\([^)]+\)/gi, (match) => {
-          return convertOklchToRgb(match);
-        });
-      }
-    });
-  } catch {
-    // ignore
-  }
-
-  try {
-    const allElements = [clonedEl, ...Array.from(clonedEl.getElementsByTagName('*'))] as HTMLElement[];
-    const colorProps = [
-      'color',
-      'background-color',
-      'border-color',
-      'border-top-color',
-      'border-right-color',
-      'border-bottom-color',
-      'border-left-color'
-    ];
-
-    allElements.forEach((el) => {
-      if (!el || !el.style) return;
-      try {
-        const computed = window.getComputedStyle(el);
-        colorProps.forEach((prop) => {
-          const val = computed.getPropertyValue(prop);
-          if (val && (val.includes('oklch') || val.includes('lab') || val.includes('color('))) {
-            const safe = convertOklchToRgb(val);
-            el.style.setProperty(prop, safe, 'important');
-          }
-        });
-      } catch {
-        // ignore
-      }
-    });
-  } catch {
-    // ignore
-  }
 }
 
 export const RevenueTrackingS1aView: React.FC<RevenueTrackingS1aViewProps> = ({
@@ -166,7 +76,7 @@ export const RevenueTrackingS1aView: React.FC<RevenueTrackingS1aViewProps> = ({
   // Fixed metadata according to specifications & Circular 152/2025/TT-BTC
   const businessName = 'Tiệm in 194';
   const businessAddress = 'Thôn 3 Quỳnh Giang cũ, xã Quỳnh Lưu, Nghệ An';
-  const taxCode = ''; // Để trống nếu chưa có
+  const taxCode = '40094013626';
   const currencyUnit = 'VNĐ';
 
   const multiplier = getRevenueMultiplier(); // Hệ số doanh thu đối tác
@@ -306,7 +216,6 @@ export const RevenueTrackingS1aView: React.FC<RevenueTrackingS1aViewProps> = ({
 
   // Handle high quality image export (20x30 cm ratio: 2:3 aspect ratio, 300 DPI high resolution)
   const handleExportImage = async () => {
-    if (!printAreaRef.current) return;
     setIsExporting(true);
     setExportSuccess(false);
     setExportError(null);
@@ -316,17 +225,19 @@ export const RevenueTrackingS1aView: React.FC<RevenueTrackingS1aViewProps> = ({
         await document.fonts.ready;
       }
 
-      // Khổ 20x30 cm ở chuẩn 300 DPI tương đương khoảng 2362 x 3543 pixels.
-      // Chúng ta sử dụng scale = 3 để đảm bảo độ phân giải siêu nét (Ultra High Resolution)
-      const canvas = await html2canvas(printAreaRef.current, {
-        scale: 3,
-        useCORS: true,
-        allowTaint: true,
-        logging: false,
-        backgroundColor: '#ffffff',
-        onclone: (clonedDoc, clonedEl) => {
-          sanitizeDocumentOklchColors(clonedDoc, clonedEl);
-        }
+      // Khổ 20x30 cm ở chuẩn in ấn 300 DPI (2362 x 3543 pixels)
+      // Render trực tiếp qua Canvas 2D engine siêu nét, không bị phụ thuộc CSS oklch của DOM
+      const canvas = await generateS1aCanvas300DPI({
+        businessName,
+        businessAddress,
+        taxCode,
+        selectedMonth,
+        selectedYear,
+        currencyUnit,
+        daysInMonth,
+        rows: dailyData.rows,
+        monthlyTotal: dailyData.monthlyTotal,
+        workshop
       });
 
       const paddedMonth = selectedMonth.toString().padStart(2, '0');
