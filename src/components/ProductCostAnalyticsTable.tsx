@@ -156,6 +156,99 @@ export function getPhotoMaterialRank(code: string, name: string): number {
 }
 
 /**
+ * Phân nhóm 5 chất liệu màng ép chuẩn theo yêu cầu:
+ * 1. Lụa (LVST, LKST, tên chứa 'lụa', 'lua')
+ * 2. Mika (MKST, tên chứa 'mika', 'mica')
+ * 3. HD Gương (HDST, tên chứa 'hd gương', 'tráng gương', 'pha lê', 'siêu bóng')
+ * 4. HD Pro (HDPROST, tên chứa 'hd pro', 'hdpro')
+ * 5. 4K (4KST, tên chứa '4k')
+ *
+ * Nguyên tắc: Giá màng ép CHỈ PHỤ THUỘC VÀO 2 YẾU TỐ:
+ * 1) Kích thước ảnh (20x30, 40x60, 50x75...)
+ * 2) Chất liệu (1 trong 5 loại: Lụa, Mika, HD Gương, HD Pro, 4K).
+ * Loại khung (K0-K3, Titan...) hay kiểu bo viền HOÀN TOÀN KHÔNG ảnh hưởng đến giá màng ép.
+ */
+export type FilmMaterialType = 'lua' | 'mika' | 'hd_guong' | 'hd_pro' | '4k' | 'unknown';
+
+export interface FilmMaterialInfo {
+  type: FilmMaterialType;
+  label: string;
+}
+
+export function detectFilmMaterial(code: string, name?: string): FilmMaterialInfo {
+  const c = (code || '').toUpperCase().trim();
+  const n = (name || '').toLowerCase().trim();
+  const fullText = `${c} ${n}`;
+
+  // 1. Phân loại 4K
+  if (
+    c.startsWith('4KST') ||
+    c.startsWith('4K') ||
+    n.includes('4k') ||
+    fullText.includes('4K')
+  ) {
+    return { type: '4k', label: '4K' };
+  }
+
+  // 2. Phân loại HD Pro (phải kiểm tra trước HD Gương để tránh nhầm)
+  if (
+    c.startsWith('HDPROST') ||
+    c.startsWith('HDPRO') ||
+    n.includes('hd pro') ||
+    n.includes('hdpro') ||
+    fullText.includes('HD PRO') ||
+    fullText.includes('HDPRO')
+  ) {
+    return { type: 'hd_pro', label: 'HD Pro' };
+  }
+
+  // 3. Phân loại HD Gương (HD tráng gương / siêu bóng / pha lê)
+  if (
+    c.startsWith('HDST') ||
+    (c.startsWith('HD') && !c.startsWith('HDPRO')) ||
+    n.includes('hd gương') ||
+    n.includes('hd guong') ||
+    n.includes('tráng gương') ||
+    n.includes('trang guong') ||
+    n.includes('pha lê') ||
+    n.includes('pha le') ||
+    n.includes('siêu bóng') ||
+    n.includes('sieu bong') ||
+    (n.includes('gương') && !n.includes('mika')) ||
+    n.includes('ảnh hd')
+  ) {
+    return { type: 'hd_guong', label: 'HD Gương' };
+  }
+
+  // 4. Phân loại Mika
+  if (
+    c.startsWith('MKST') ||
+    c.startsWith('MK') ||
+    n.includes('mika') ||
+    n.includes('mica') ||
+    fullText.includes('MKST')
+  ) {
+    return { type: 'mika', label: 'Mika' };
+  }
+
+  // 5. Phân loại Lụa
+  if (
+    c.startsWith('LVST') ||
+    c.startsWith('LKST') ||
+    c.startsWith('LV') ||
+    c.startsWith('LK') ||
+    n.includes('lụa') ||
+    n.includes('lua') ||
+    fullText.includes('LVST') ||
+    fullText.includes('LKST')
+  ) {
+    return { type: 'lua', label: 'Lụa' };
+  }
+
+  return { type: 'unknown', label: '' };
+}
+
+/**
  * Đơn giá chuẩn cốt ván MDF cho kích thước 40*60:
  * - Ván 9li (9mm): 20.265 VNĐ
  * - Ván 12li (12mm): 26.520 VNĐ
@@ -721,6 +814,7 @@ export const ProductCostAnalyticsTable: React.FC<ProductCostAnalyticsTableProps>
       sizeKey: string;
       frameCat: FrameCategory;
       is4060: boolean;
+      filmMaterial: FilmMaterialInfo;
       prodInfo: ReturnType<typeof resolveProductForCode>;
     }> = {};
 
@@ -730,6 +824,7 @@ export const ProductCostAnalyticsTable: React.FC<ProductCostAnalyticsTableProps>
         sizeKey: normalizePhotoSizeKey(prodInfo.size, code, prodInfo.name),
         frameCat: detectFrameCategory(code, prodInfo.name),
         is4060: isSize4060(prodInfo.size, code, prodInfo.name),
+        filmMaterial: detectFilmMaterial(code, prodInfo.name),
         prodInfo
       };
     });
@@ -742,15 +837,18 @@ export const ProductCostAnalyticsTable: React.FC<ProductCostAnalyticsTableProps>
     return allCodes.filter(c => codeMetaMap[c]?.is4060);
   }, [allCodes, codeMetaMap]);
 
-  // 1, 2, 3. TỰ ĐỘNG THAM CHIẾU VÀ ĐỒNG NHẤT CHI PHÍ THEO KÍCH THƯỚC:
+  // 1, 2, 3, 4. TỰ ĐỘNG THAM CHIẾU VÀ ĐỒNG NHẤT CHI PHÍ:
   // - Quy tắc 1 & 2: Phân loại 7 nhóm khung/viền (Bo viền, K0-K3, K4-K9, K10, K11, Titan 1, Titan 2).
   //   Giá khung chỉ phụ thuộc vào KÍCH THƯỚC và NHÓM KHUNG, không phân biệt chất liệu. Lấy giá đã điền làm chuẩn tham chiếu.
   // - Quy tắc 3: Mục "Khác" và "Mực, Giấy" áp dụng đồng nhất cho TẤT CẢ kích thước ảnh (không phân biệt chất liệu/khung).
-  const { refFrameMap, refOtherMap, refInkMap, refPaperMap } = useMemo(() => {
+  // - Quy tắc 4: MÀNG ÉP chỉ phụ thuộc vào KÍCH THƯỚC và 5 CHẤT LIỆU (Lụa, Mika, HD Gương, HD Pro, 4K).
+  //   Không phụ thuộc vào khung hay viền. Lấy giá đã có làm chuẩn tham chiếu; nhóm chưa có thì để trống (0), tuyệt đối không đoán giá.
+  const { refFrameMap, refOtherMap, refInkMap, refPaperMap, refFilmMap } = useMemo(() => {
     const frameMap: Record<string, number> = {};
     const otherMap: Record<string, number> = {};
     const inkMap: Record<string, number> = {};
     const paperMap: Record<string, number> = {};
+    const filmMap: Record<string, number> = {};
 
     // 1. Quét tìm các giá chuẩn đã nhập trong costMap
     for (const [code, cost] of Object.entries(costMap)) {
@@ -759,6 +857,7 @@ export const ProductCostAnalyticsTable: React.FC<ProductCostAnalyticsTableProps>
         sizeKey: normalizePhotoSizeKey(undefined, code),
         frameCat: detectFrameCategory(code),
         is4060: isSize4060(undefined, code),
+        filmMaterial: detectFilmMaterial(code),
         prodInfo: resolveProductForCode(code)
       };
 
@@ -776,6 +875,15 @@ export const ProductCostAnalyticsTable: React.FC<ProductCostAnalyticsTableProps>
         const groupKey = `${meta.sizeKey}_${meta.frameCat}`;
         if (frameMap[groupKey] === undefined) {
           frameMap[groupKey] = cost.frame;
+        }
+      }
+
+      // Tham chiếu Màng Ép: CHỈ phụ thuộc vào [Kích thước] và [Chất liệu] (1 trong 5 loại)
+      // Ưu tiên sử dụng chính các mức giá đã điền sẵn này làm giá chuẩn (tham chiếu)
+      if (cost.film !== undefined && cost.film > 0 && meta.filmMaterial && meta.filmMaterial.type !== 'unknown') {
+        const filmKey = `${meta.sizeKey}_${meta.filmMaterial.type}`;
+        if (filmMap[filmKey] === undefined) {
+          filmMap[filmKey] = cost.film;
         }
       }
 
@@ -804,7 +912,8 @@ export const ProductCostAnalyticsTable: React.FC<ProductCostAnalyticsTableProps>
       refFrameMap: frameMap,
       refOtherMap: otherMap,
       refInkMap: inkMap,
-      refPaperMap: paperMap
+      refPaperMap: paperMap,
+      refFilmMap: filmMap
     };
   }, [costMap, codeMetaMap, allCodes]);
 
@@ -888,8 +997,31 @@ export const ProductCostAnalyticsTable: React.FC<ProductCostAnalyticsTableProps>
           }
         : { thickness: 'none' as const, label: 'Không cốt' };
 
-      // 3. MÀNG ÉP:
-      const resolvedFilm = userCosts.film || 0;
+      // 3. MÀNG ÉP (QUY TẮC TỰ ĐỘNG THAM CHIẾU 5 CHẤT LIỆU MÀNG ÉP):
+      // - Giá màng ép CHỈ PHỤ THUỘC VÀO 2 YẾU TỐ:
+      //   1) Kích thước ảnh (20x30, 40x60, 50x75...)
+      //   2) Chất liệu (1 trong 5 loại: Lụa, Mika, HD Gương, HD Pro, 4K).
+      // - Loại khung hay kiểu bo viền HOÀN TOÀN KHÔNG ẢNH HƯỞNG đến giá màng ép.
+      // - Ưu tiên sử dụng giá đã điền sẵn trong bảng làm giá chuẩn (tham chiếu) để tự động điền cho các mã cùng kích thước & chất liệu.
+      // - Với những nhóm [Kích thước + Chất liệu] chưa có giá tham chiếu nào: Để trống (0), TUYỆT ĐỐI KHÔNG tự đoán giá.
+      const filmMaterial = meta?.filmMaterial || detectFilmMaterial(code, prodInfo.name);
+      const filmGroupKey = filmMaterial.type !== 'unknown' ? `${sizeKey}_${filmMaterial.type}` : '';
+      const refFilm = filmGroupKey ? refFilmMap[filmGroupKey] : undefined;
+
+      let resolvedFilm = 0;
+      let isFilmAutoFilled = false;
+
+      // Ưu tiên 1: Giá do người dùng nhập thủ công cho chính mã này
+      if (userCosts.film !== undefined && userCosts.film > 0) {
+        resolvedFilm = userCosts.film;
+        isFilmAutoFilled = false;
+      }
+      // Ưu tiên 2: Tự động điền theo giá tham chiếu của cùng Kích thước + Chất liệu
+      else if (filmMaterial.type !== 'unknown' && refFilm !== undefined && refFilm > 0) {
+        resolvedFilm = refFilm;
+        isFilmAutoFilled = true;
+      }
+      // Chưa có giá tham chiếu: Để trống (resolvedFilm = 0)
 
       // 4. NGUYÊN TẮC GIÁ KHUNG / VIỀN (ÁP DỤNG CHO CẢ 7 NHÓM KHUNG/VIỀN - STRICT REFERENCE):
       // - Chỉ được lấy giá tham chiếu của ĐÚNG CÙNG KÍCH THƯỚC + ĐÚNG CÙNG NHÓM KHUNG.
@@ -959,6 +1091,9 @@ export const ProductCostAnalyticsTable: React.FC<ProductCostAnalyticsTableProps>
         isInkAutoFilled,
         isPaperAutoFilled,
         isBoardAutoFilled,
+        filmMaterial,
+        filmMaterialLabel: filmMaterial.label,
+        isFilmAutoFilled,
         coreBoardInfo,
         fullTitle: prodInfo.fullTitle,
         studioPrice,
@@ -1007,7 +1142,7 @@ export const ProductCostAnalyticsTable: React.FC<ProductCostAnalyticsTableProps>
       ...row,
       stt: idx + 1
     }));
-  }, [costMap, allCodeItems, codeMetaMap, refFrameMap, refOtherMap, refInkMap, refPaperMap]);
+  }, [costMap, allCodeItems, codeMetaMap, refFrameMap, refOtherMap, refInkMap, refPaperMap, refFilmMap]);
 
   // Filter rows
   const filteredRows = useMemo(() => {
@@ -1128,6 +1263,28 @@ export const ProductCostAnalyticsTable: React.FC<ProductCostAnalyticsTableProps>
         });
       }
 
+      // 5. QUY TẮC MÀNG ÉP (ÁP DỤNG CHO 5 CHẤT LIỆU MÀNG ÉP: LỤA, MIKA, HD GƯƠNG, HD PRO, 4K):
+      // - Giá màng ép CHỈ phụ thuộc vào: 1) Kích thước ảnh, 2) Chất liệu. Không phụ thuộc vào khung hay viền.
+      // - Khi nhập hoặc sửa giá màng ép cho bất kỳ mã nào, tự động điền đồng loạt cho các mã còn lại CÙNG KÍCH THƯỚC và CÙNG CHẤT LIỆU.
+      if (field === 'film' && meta.filmMaterial && meta.filmMaterial.type !== 'unknown') {
+        allCodes.forEach(otherCode => {
+          if (otherCode !== code) {
+            const oMeta = codeMetaMap[otherCode];
+            if (
+              oMeta &&
+              oMeta.sizeKey === meta.sizeKey &&
+              oMeta.filmMaterial &&
+              oMeta.filmMaterial.type === meta.filmMaterial.type
+            ) {
+              nextMap[otherCode] = {
+                ...(nextMap[otherCode] || prev[otherCode] || {}),
+                film: val
+              };
+            }
+          }
+        });
+      }
+
       // Debounced auto-save to Firestore
       if (saveTimeoutRef.current) {
         clearTimeout(saveTimeoutRef.current);
@@ -1209,6 +1366,10 @@ export const ProductCostAnalyticsTable: React.FC<ProductCostAnalyticsTableProps>
 
         if (r.frame !== undefined && r.frame > 0 && (existing.frame === undefined || existing.frame === 0 || existing.frame !== r.frame)) {
           item.frame = r.frame;
+          changed = true;
+        }
+        if (r.film !== undefined && r.film > 0 && (existing.film === undefined || existing.film === 0 || existing.film !== r.film)) {
+          item.film = r.film;
           changed = true;
         }
         if (r.other !== undefined && r.other > 0 && (existing.other === undefined || existing.other === 0 || existing.other !== r.other)) {
@@ -1372,6 +1533,11 @@ export const ProductCostAnalyticsTable: React.FC<ProductCostAnalyticsTableProps>
                   <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg bg-teal-50 text-teal-950 border border-teal-300 font-semibold shadow-2xs">
                     <Sparkles className="w-3 h-3 text-teal-600" />
                     <span><strong>Cốt Vật Tư:</strong> Tự động đồng bộ từ Bảng Giá Cốt (MDF 9li, MDF 12li, Fomex 9li)</span>
+                  </span>
+
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg bg-amber-50 text-amber-950 border border-amber-300 font-semibold shadow-2xs">
+                    <Sparkles className="w-3 h-3 text-amber-600" />
+                    <span><strong>Màng Ép:</strong> Tự động tham chiếu theo [Kích thước] x [5 Chất liệu: Lụa, Mika, HD Gương, HD Pro, 4K]</span>
                   </span>
                 </div>
               </div>
@@ -1544,7 +1710,13 @@ export const ProductCostAnalyticsTable: React.FC<ProductCostAnalyticsTableProps>
                   Ván/Fomex (đ)
                   <span className="block text-[9px] text-emerald-300 font-normal">Đồng bộ giá cốt</span>
                 </th>
-                <th className="py-3 px-2 w-24 text-center bg-slate-800/80">Màng Ép (đ)</th>
+                <th
+                  className="py-3 px-2 w-28 text-center bg-slate-800/80"
+                  title="Quy tắc màng ép: Giá chỉ phụ thuộc vào Kích thước ảnh và 5 chất liệu (Lụa, Mika, HD Gương, HD Pro, 4K). Không phụ thuộc vào loại khung hay bo viền."
+                >
+                  Màng Ép (đ)
+                  <span className="block text-[9px] text-emerald-300 font-normal">5 chất liệu chuẩn</span>
+                </th>
                 <th className="py-3 px-2 w-28 text-center bg-slate-800/80" title="Quy tắc 1 & 2: Phân loại 7 nhóm (Bo viền, K0-K3, K4-K9, K10, K11, Titan 1, Titan 2). Giá bằng nhau tuyệt đối theo kích thước và nhóm khung, không phân biệt chất liệu.">
                   Khung/Viền (đ)
                   <span className="block text-[9px] text-amber-300 font-normal">7 nhóm chuẩn</span>
@@ -1724,11 +1896,43 @@ export const ProductCostAnalyticsTable: React.FC<ProductCostAnalyticsTableProps>
                       <input
                         type="text"
                         inputMode="numeric"
-                        value={row.film !== undefined ? formatNumber(row.film) : ''}
+                        value={row.film !== undefined && row.film > 0 ? formatNumber(row.film) : ''}
                         onChange={(e) => handleCostChange(row.code, 'film', e.target.value)}
                         placeholder="0"
-                        className="w-full px-2 py-1 bg-white border border-slate-200 rounded-lg text-right font-mono text-xs focus:bg-amber-50/50 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-hidden"
+                        title={
+                          row.isFilmAutoFilled
+                            ? `Tự động điền theo giá tham chiếu màng ${row.filmMaterialLabel} (${row.sizeKey}): ${formatCurrency(row.film || 0)}`
+                            : row.film && row.film > 0
+                            ? `Đơn giá màng ép đã nhập: ${formatCurrency(row.film)}`
+                            : `Nhập giá màng ép cho ${row.filmMaterialLabel || 'sản phẩm'} (${row.sizeKey})`
+                        }
+                        className={`w-full px-2 py-1 bg-white border rounded-lg text-right font-mono text-xs focus:bg-amber-50/50 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-hidden ${
+                          row.isFilmAutoFilled
+                            ? 'border-emerald-400 bg-emerald-50/40 text-emerald-950 font-bold'
+                            : row.film && row.film > 0
+                            ? 'border-amber-300 bg-amber-50/20 text-slate-900 font-bold'
+                            : 'border-slate-200 text-slate-400'
+                        }`}
                       />
+                      {row.filmMaterialLabel ? (
+                        <div
+                          className={`text-[9px] font-bold mt-0.5 text-right flex items-center justify-end gap-0.5 px-0.5 ${
+                            row.isFilmAutoFilled ? 'text-emerald-700' : 'text-slate-500'
+                          }`}
+                          title={
+                            row.isFilmAutoFilled
+                              ? `Tự động điền theo chuẩn tham chiếu màng ${row.filmMaterialLabel} (${row.sizeKey}): ${formatCurrency(row.film || 0)}`
+                              : `Chất liệu màng ép: ${row.filmMaterialLabel} (${row.sizeKey})`
+                          }
+                        >
+                          <Sparkles className={`w-2.5 h-2.5 shrink-0 ${row.isFilmAutoFilled ? 'text-emerald-600' : 'text-slate-400'}`} />
+                          <span>{row.filmMaterialLabel} ({row.sizeKey})</span>
+                        </div>
+                      ) : (
+                        <div className="text-[9px] text-slate-400 mt-0.5 text-right px-0.5">
+                          Khổ {row.sizeKey}
+                        </div>
+                      )}
                     </td>
 
                     {/* 5. Khung / Viền */}

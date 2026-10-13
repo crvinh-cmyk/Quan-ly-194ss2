@@ -69,6 +69,7 @@ export interface MaterialDeduction {
   materialName: string;
   unit: string;
   quantity: number;
+  date?: string; // YYYY-MM-DD - Ngày thực tế trừ kho vật tư
 }
 
 export interface Order {
