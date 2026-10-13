@@ -212,6 +212,7 @@ export interface ProductCostItem {
   frame?: number;     // Khung/Viền
   other?: number;     // Khác
   manualStudioPrice?: number; // Giá bán Studio (nếu muốn nhập/sửa thủ công khi bảng giá chưa có)
+  importCost?: number;        // Giá Vốn Nhập / Chi Phí Thành Phẩm (VNĐ)
 }
 
 export type ProductCostMap = Record<string, ProductCostItem>;

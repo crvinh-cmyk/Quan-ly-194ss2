@@ -6,12 +6,13 @@ import {
   DollarSign, TrendingUp, Calculator, Save, Printer, Download,
   Search, FileText, Sparkles, CheckCircle2, Layers, PieChart,
   RefreshCw, Check, Percent, ArrowUpRight, ArrowDownRight, Info,
-  Filter, Eye, Table2
+  Filter, Eye, Table2, Plus, Trash2, Pencil, X
 } from 'lucide-react';
 import {
   subscribeProductCosts,
   saveProductCostsToFirestore,
   getLocalProductCosts,
+  saveLocalProductCosts,
   subscribeBoardCorePrices,
   getLocalBoardCorePrices,
   DEFAULT_BOARD_CORE_PRICES
@@ -718,6 +719,53 @@ export function resolveProductForCode(code: string, products: Product[] = []) {
 }
 
 /**
+ * Kiểm tra mã sản phẩm thuộc Danh mục "Sản Phẩm Nhập Thành Phẩm & Định Mức Tùy Chỉnh"
+ * (Tách khỏi bảng bóc tách chi tiết vật tư Mực, Giấy, Ván, Màng, Khung)
+ */
+export function isImportedCustomProduct(code: string, productName?: string, customCodesSet?: Set<string>): boolean {
+  if (!code && !productName) return false;
+  const cleanCode = (code || '').toUpperCase().trim();
+  const cleanName = (productName || '').toLowerCase().trim();
+
+  if (customCodesSet && customCodesSet.has(cleanCode)) {
+    return true;
+  }
+
+  // 1. Mã sản phẩm đặc thù
+  if (
+    cleanCode === 'ABAT' ||
+    cleanCode.startsWith('ABAT') ||
+    cleanCode === 'ABMP30X30ST' ||
+    cleanCode === 'ABMP30X30' ||
+    cleanCode === 'ABMP20X30ST' ||
+    cleanCode === 'ABMP20X30' ||
+    cleanCode === 'ABMP20X20' ||
+    cleanCode === 'ABMP20X20ST' ||
+    cleanCode === 'NEPST1' ||
+    cleanCode === 'NEPST2' ||
+    cleanCode === 'NEPST3'
+  ) {
+    return true;
+  }
+
+  // 2. Tên sản phẩm đặc thù
+  if (
+    cleanName.includes('abat') ||
+    cleanName.includes('album mở phẳng 20x20') ||
+    cleanName.includes('album mở phẳng 20x30') ||
+    cleanName.includes('album mở phẳng 30x30') ||
+    cleanName.includes('khung gia cố 80*120') ||
+    cleanName.includes('khung gia cố 100*150') ||
+    cleanName.includes('khung gia cố 110*180') ||
+    cleanName.includes('khung gia cố')
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
  * Tính toán đơn giá vốn (Tổng giá vốn 1 sản phẩm) cho tất cả các mã sản phẩm
  * dựa trên Bảng giá sản phẩm, costMap và Bảng giá cốt vật tư.
  */
@@ -817,6 +865,15 @@ export function computeProductCostLookupMap(
     const prodInfo = meta.prodInfo;
     const userCosts = (costMap || {})[code] || {};
 
+    // Nếu sản phẩm thuộc Danh mục Nhập Thành Phẩm / Giá vốn tùy chỉnh
+    if (isImportedCustomProduct(code, prodInfo.name) || userCosts.importCost !== undefined) {
+      const customCost = userCosts.importCost !== undefined
+        ? userCosts.importCost
+        : (userCosts.other !== undefined ? userCosts.other : 0);
+      result[code.toUpperCase()] = customCost;
+      return;
+    }
+
     const refInk = inkMap[sizeKey];
     const resolvedInk = (userCosts.ink !== undefined && userCosts.ink > 0) ? userCosts.ink : (refInk || 0);
 
@@ -901,11 +958,179 @@ export const ProductCostAnalyticsTable: React.FC<ProductCostAnalyticsTableProps>
 }) => {
   const [costMap, setCostMap] = useState<ProductCostMap>(() => getLocalProductCosts());
   const [boardCorePrices, setBoardCorePrices] = useState<BoardCorePriceMap>(() => getLocalBoardCorePrices());
+  const [activeCostTab, setActiveCostTab] = useState<'dissected' | 'imported'>('dissected');
   const [searchQuery, setSearchQuery] = useState('');
   const [filterStatus, setFilterStatus] = useState<'all' | 'filled' | 'empty'>('all');
   const [isSaving, setIsSaving] = useState(false);
   const [toastMessage, setToastMessage] = useState('');
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Quản lý sản phẩm nhập thành phẩm tự định nghĩa (Thêm/Sửa/Xóa)
+  const [customImportedItems, setCustomImportedItems] = useState<Array<{
+    code: string;
+    name: string;
+    size: string;
+    defaultPrice?: number;
+    importCost?: number;
+  }>>(() => {
+    try {
+      const saved = localStorage.getItem('custom_imported_products_v2');
+      if (saved) return JSON.parse(saved);
+    } catch (e) {
+      console.error('Error loading custom imported products:', e);
+    }
+    return [];
+  });
+
+  const [deletedImportedCodes, setDeletedImportedCodes] = useState<Set<string>>(() => {
+    try {
+      const saved = localStorage.getItem('deleted_imported_codes_v2');
+      if (saved) return new Set(JSON.parse(saved));
+    } catch (e) {
+      console.error('Error loading deleted imported codes:', e);
+    }
+    return new Set();
+  });
+
+  // Modal Thêm / Sửa Sản phẩm Nhập Thành Phẩm
+  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [editingItemCode, setEditingItemCode] = useState<string | null>(null);
+  const [productForm, setProductForm] = useState({
+    code: '',
+    name: '',
+    size: '',
+    importCost: '',
+    studioPrice: ''
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('custom_imported_products_v2', JSON.stringify(customImportedItems));
+    } catch (e) {
+      console.error('Failed to save custom imported products:', e);
+    }
+  }, [customImportedItems]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('deleted_imported_codes_v2', JSON.stringify(Array.from(deletedImportedCodes)));
+    } catch (e) {
+      console.error('Failed to save deleted imported codes:', e);
+    }
+  }, [deletedImportedCodes]);
+
+  const customCodesSet = useMemo(() => {
+    const set = new Set<string>();
+    customImportedItems.forEach(item => set.add(item.code.toUpperCase().trim()));
+    return set;
+  }, [customImportedItems]);
+
+  const handleOpenAddModal = () => {
+    setEditingItemCode(null);
+    setProductForm({ code: '', name: '', size: '', importCost: '', studioPrice: '' });
+    setIsAddModalOpen(true);
+  };
+
+  const handleOpenEditModal = (item: { code: string; name: string; size: string; importCost: number; studioPrice: number }) => {
+    setEditingItemCode(item.code);
+    setProductForm({
+      code: item.code,
+      name: item.name,
+      size: item.size || '',
+      importCost: item.importCost > 0 ? String(item.importCost) : '',
+      studioPrice: item.studioPrice > 0 ? String(item.studioPrice) : ''
+    });
+    setIsAddModalOpen(true);
+  };
+
+  const handleDeleteImportedProduct = (code: string, name: string) => {
+    if (!window.confirm(`Bạn có chắc chắn muốn xóa sản phẩm "${name}" (${code}) khỏi Danh mục Sản Phẩm Nhập Thành Phẩm?`)) {
+      return;
+    }
+    const codeUpper = code.toUpperCase().trim();
+    setDeletedImportedCodes(prev => {
+      const next = new Set(prev);
+      next.add(codeUpper);
+      return next;
+    });
+    setCustomImportedItems(prev => prev.filter(i => i.code.toUpperCase().trim() !== codeUpper));
+    setToastMessage(`Đã xóa sản phẩm ${code} khỏi danh mục.`);
+    setTimeout(() => setToastMessage(''), 3000);
+  };
+
+  const handleSaveProductForm = (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleanCode = productForm.code.trim();
+    const cleanName = productForm.name.trim();
+    const cleanSize = productForm.size.trim();
+
+    if (!cleanCode || !cleanName) {
+      alert('Vui lòng nhập đầy đủ Mã sản phẩm và Tên sản phẩm!');
+      return;
+    }
+
+    const numImportCost = parseFloat(productForm.importCost.replace(/\D/g, '')) || 0;
+    const numStudioPrice = parseFloat(productForm.studioPrice.replace(/\D/g, '')) || 0;
+    const codeUpper = cleanCode.toUpperCase();
+
+    if (editingItemCode) {
+      const editUpper = editingItemCode.toUpperCase();
+      setCustomImportedItems(prev => {
+        const exists = prev.some(item => item.code.toUpperCase() === editUpper);
+        if (exists) {
+          return prev.map(item => item.code.toUpperCase() === editUpper ? {
+            code: cleanCode,
+            name: cleanName,
+            size: cleanSize,
+            defaultPrice: numStudioPrice,
+            importCost: numImportCost
+          } : item);
+        } else {
+          return [...prev, {
+            code: cleanCode,
+            name: cleanName,
+            size: cleanSize,
+            defaultPrice: numStudioPrice,
+            importCost: numImportCost
+          }];
+        }
+      });
+    } else {
+      setCustomImportedItems(prev => [
+        ...prev.filter(i => i.code.toUpperCase() !== codeUpper),
+        {
+          code: cleanCode,
+          name: cleanName,
+          size: cleanSize,
+          defaultPrice: numStudioPrice,
+          importCost: numImportCost
+        }
+      ]);
+    }
+
+    setDeletedImportedCodes(prev => {
+      const next = new Set(prev);
+      next.delete(codeUpper);
+      return next;
+    });
+
+    const updatedCostMap = {
+      ...costMap,
+      [cleanCode]: {
+        ...(costMap[cleanCode] || {}),
+        importCost: numImportCost,
+        manualStudioPrice: numStudioPrice,
+        isImportedCustom: true
+      }
+    };
+    setCostMap(updatedCostMap);
+    saveLocalProductCosts(updatedCostMap);
+    saveProductCostsToFirestore(updatedCostMap);
+
+    setIsAddModalOpen(false);
+    setToastMessage(editingItemCode ? 'Đã cập nhật sản phẩm thành công!' : 'Đã thêm sản phẩm mới thành công!');
+    setTimeout(() => setToastMessage(''), 3000);
+  };
 
   // Subscribe to real-time updates from Firestore for Product Costs
   useEffect(() => {
@@ -1322,9 +1547,112 @@ export const ProductCostAnalyticsTable: React.FC<ProductCostAnalyticsTableProps>
     }));
   }, [costMap, allCodeItems, codeMetaMap, refFrameMap, refOtherMap, refInkMap, refPaperMap, refFilmMap]);
 
-  // Filter rows
-  const filteredRows = useMemo(() => {
-    return compiledRows.filter(r => {
+  // 1. Bảng bóc tách chi tiết vật tư
+  const dissectedRows = useMemo(() => {
+    return compiledRows
+      .filter(r => !deletedImportedCodes.has(r.code.toUpperCase()))
+      .filter(r => !isImportedCustomProduct(r.code, r.name, customCodesSet))
+      .map((r, idx) => ({ ...r, stt: idx + 1 }));
+  }, [compiledRows, deletedImportedCodes, customCodesSet]);
+
+  // 2. Bảng Sản Phẩm Nhập Thành Phẩm & Định Mức Tùy Chỉnh
+  const importedCustomRows = useMemo(() => {
+    const DEFAULT_TARGET_ITEMS = [
+      { code: 'Abat', name: 'Sản Phẩm Abat', size: '', defaultPrice: 0 },
+      { code: 'ABMP30x30ST', name: 'Album Mở Phẳng 30x30 10 Tờ', size: '30x30', defaultPrice: 520000 },
+      { code: 'ABMP20x30ST', name: 'Album Mở Phẳng 20x30 10 Tờ', size: '20x30', defaultPrice: 390000 },
+      { code: 'ABMP20x20', name: 'Album Mở Phẳng 20x20 10 Tờ', size: '20x20', defaultPrice: 290000 },
+      { code: 'NEPST1', name: 'Khung Gia Cố 80*120', size: '80*120', defaultPrice: 60000 },
+      { code: 'NEPST2', name: 'Khung Gia Cố 100*150', size: '100*150', defaultPrice: 90000 },
+      { code: 'NEPST3', name: 'Khung Gia Cố 110*180', size: '110*180', defaultPrice: 120000 }
+    ];
+
+    const seenCodes = new Set<string>();
+    const list: Array<{
+      stt: number;
+      code: string;
+      name: string;
+      size: string;
+      importCost: number;
+      studioPrice: number;
+      grossProfit: number;
+      marginOnPrice: number;
+    }> = [];
+
+    // Gộp sản phẩm mặc định + sản phẩm người dùng tự thêm
+    const allImportedItems = [
+      ...DEFAULT_TARGET_ITEMS,
+      ...customImportedItems.map(item => ({
+        code: item.code,
+        name: item.name,
+        size: item.size,
+        defaultPrice: item.defaultPrice || 0
+      }))
+    ];
+
+    allImportedItems.forEach(def => {
+      const codeUpper = def.code.toUpperCase().trim();
+      if (deletedImportedCodes.has(codeUpper)) return;
+      if (seenCodes.has(codeUpper)) return;
+      seenCodes.add(codeUpper);
+
+      const userCosts = costMap[def.code] || costMap[codeUpper] || {};
+      const prodInfo = resolveProductForCode(def.code, products);
+
+      const name = prodInfo.matchedProduct?.name || (prodInfo.name && prodInfo.name !== def.code ? prodInfo.name : def.name);
+      const size = prodInfo.size || def.size;
+      const studioPrice = (userCosts.manualStudioPrice !== undefined && userCosts.manualStudioPrice > 0)
+        ? userCosts.manualStudioPrice
+        : (prodInfo.studioPrice || def.defaultPrice);
+      const importCost = userCosts.importCost !== undefined
+        ? userCosts.importCost
+        : (userCosts.other || 0);
+      const grossProfit = studioPrice - importCost;
+      const marginOnPrice = studioPrice > 0 ? Math.round(((grossProfit / studioPrice) * 100) * 10) / 10 : 0;
+
+      list.push({
+        stt: 0,
+        code: def.code,
+        name,
+        size,
+        importCost,
+        studioPrice,
+        grossProfit,
+        marginOnPrice
+      });
+    });
+
+    // Bổ sung các mã sản phẩm đặc thù khác
+    compiledRows.forEach(r => {
+      const codeUpper = r.code.toUpperCase().trim();
+      if (deletedImportedCodes.has(codeUpper)) return;
+      if (isImportedCustomProduct(r.code, r.name, customCodesSet) && !seenCodes.has(codeUpper)) {
+        seenCodes.add(codeUpper);
+        const userCosts = costMap[r.code] || costMap[codeUpper] || {};
+        const importCost = userCosts.importCost !== undefined ? userCosts.importCost : (userCosts.other || 0);
+        const studioPrice = r.studioPrice;
+        const grossProfit = studioPrice - importCost;
+        const marginOnPrice = studioPrice > 0 ? Math.round(((grossProfit / studioPrice) * 100) * 10) / 10 : 0;
+
+        list.push({
+          stt: 0,
+          code: r.code,
+          name: r.name,
+          size: r.size,
+          importCost,
+          studioPrice,
+          grossProfit,
+          marginOnPrice
+        });
+      }
+    });
+
+    return list.map((item, idx) => ({ ...item, stt: idx + 1 }));
+  }, [compiledRows, costMap, products, customImportedItems, deletedImportedCodes, customCodesSet]);
+
+  // Lọc danh sách Bảng Bóc Tách
+  const filteredDissectedRows = useMemo(() => {
+    return dissectedRows.filter(r => {
       if (filterStatus === 'filled' && !r.hasCostData) return false;
       if (filterStatus === 'empty' && r.hasCostData) return false;
 
@@ -1337,16 +1665,32 @@ export const ProductCostAnalyticsTable: React.FC<ProductCostAnalyticsTableProps>
         r.fullTitle.toLowerCase().includes(q)
       );
     });
-  }, [compiledRows, searchQuery, filterStatus]);
+  }, [dissectedRows, searchQuery, filterStatus]);
 
-  // Summary statistics across all items
+  // Lọc danh sách Bảng Nhập Thành Phẩm
+  const filteredImportedRows = useMemo(() => {
+    return importedCustomRows.filter(r => {
+      if (!searchQuery.trim()) return true;
+      const q = searchQuery.toLowerCase().trim();
+      return (
+        r.code.toLowerCase().includes(q) ||
+        r.name.toLowerCase().includes(q) ||
+        r.size.toLowerCase().includes(q)
+      );
+    });
+  }, [importedCustomRows, searchQuery]);
+
+  // Compatibility alias for filtering
+  const filteredRows = filteredDissectedRows;
+
+  // Summary statistics across dissected items
   const statsSummary = useMemo(() => {
-    const totalItems = compiledRows.length;
-    const filledItems = compiledRows.filter(r => r.hasCostData).length;
-    const filledRowsList = compiledRows.filter(r => r.hasCostData && r.studioPrice > 0);
+    const totalItems = dissectedRows.length;
+    const filledItems = dissectedRows.filter(r => r.hasCostData).length;
+    const filledRowsList = dissectedRows.filter(r => r.hasCostData && r.studioPrice > 0);
 
-    const totalStudioValue = compiledRows.reduce((sum, r) => sum + r.studioPrice, 0);
-    const totalCostValue = compiledRows.reduce((sum, r) => sum + r.totalCost, 0);
+    const totalStudioValue = dissectedRows.reduce((sum, r) => sum + r.studioPrice, 0);
+    const totalCostValue = dissectedRows.reduce((sum, r) => sum + r.totalCost, 0);
 
     const avgMarginOnPrice = filledRowsList.length > 0
       ? filledRowsList.reduce((sum, r) => sum + r.marginOnPrice, 0) / filledRowsList.length
@@ -1359,7 +1703,7 @@ export const ProductCostAnalyticsTable: React.FC<ProductCostAnalyticsTableProps>
       totalCostValue,
       avgMarginOnPrice: Math.round(avgMarginOnPrice * 10) / 10
     };
-  }, [compiledRows]);
+  }, [dissectedRows]);
 
   // Handle cell input change with auto-fill & synchronization according to rules
   const handleCostChange = (code: string, field: keyof ProductCostItem, rawVal: string) => {
@@ -1679,6 +2023,35 @@ export const ProductCostAnalyticsTable: React.FC<ProductCostAnalyticsTableProps>
         </div>
       )}
 
+      {/* SUB-TABLE TAB NAVIGATION */}
+      <div className="flex items-center gap-2 border-b border-slate-200 pb-3 flex-wrap">
+        <button
+          type="button"
+          onClick={() => setActiveCostTab('dissected')}
+          className={`px-4 py-2.5 rounded-xl text-xs sm:text-sm font-black transition cursor-pointer flex items-center gap-2 ${
+            activeCostTab === 'dissected'
+              ? 'bg-amber-500 text-slate-950 shadow-md ring-2 ring-amber-400'
+              : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200'
+          }`}
+        >
+          <Table2 className="w-4 h-4" />
+          <span>Bảng 1: Định Mức Bóc Tách Vật Tư ({dissectedRows.length} mã)</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveCostTab('imported')}
+          className={`px-4 py-2.5 rounded-xl text-xs sm:text-sm font-black transition cursor-pointer flex items-center gap-2 ${
+            activeCostTab === 'imported'
+              ? 'bg-amber-500 text-slate-950 shadow-md ring-2 ring-amber-400'
+              : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200'
+          }`}
+        >
+          <Layers className="w-4 h-4" />
+          <span>Bảng 2: Sản Phẩm Nhập Thành Phẩm & Định Mức Tùy Chỉnh ({importedCustomRows.length} mã)</span>
+        </button>
+      </div>
+
       {/* TOP HEADER & CONTROL PANEL */}
       <div className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-5 shadow-xs space-y-4">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
@@ -1689,68 +2062,75 @@ export const ProductCostAnalyticsTable: React.FC<ProductCostAnalyticsTableProps>
               </span>
               <div>
                 <h3 className="text-base sm:text-lg font-black text-slate-900 flex items-center gap-2">
-                  Bảng Thống Kê Định Mức Giá Vốn & Tỷ Suất Lợi Nhuận Gộp
+                  {activeCostTab === 'dissected'
+                    ? 'Bảng Thống Kê Định Mức Giá Vốn & Tỷ Suất Lợi Nhuận Gộp'
+                    : 'Bảng Sản Phẩm Nhập Thành Phẩm & Định Mức Tùy Chỉnh'}
                   <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-300 font-mono">
-                    Đầy đủ {compiledRows.length} Mã Sản Phẩm Studio
+                    {activeCostTab === 'dissected'
+                      ? `${dissectedRows.length} Mã Bóc Tách`
+                      : `${importedCustomRows.length} Mã Nhập Thành Phẩm`}
                   </span>
                 </h3>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  Tự động liên kết Tên hàng & Giá bán Studio từ <strong>Bảng Giá Sản Phẩm</strong>. Tự động tính <strong>Tổng Giá Vốn</strong>, <strong>Lợi Nhuận Gộp</strong> và <strong>Tỷ Suất LNG / Giá Bán</strong>.
+                  {activeCostTab === 'dissected'
+                    ? 'Tự động liên kết Tên hàng & Giá bán Studio từ Bảng Giá Sản Phẩm. Bóc tách 6 thành phần chi phí (Mực, Giấy, Ván, Màng, Khung, Khác).'
+                    : 'Dành riêng cho các mã sản phẩm mua nguyên chiếc, nhập thành phẩm hoặc định mức tùy chỉnh (Abat, Album mở phẳng, Khung nẹp gia cố...). Cho phép tự nhập Giá vốn nhập thủ công.'}
                 </p>
-                <div className="mt-1.5 flex items-center gap-2 flex-wrap text-[11px]">
-                  <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg bg-emerald-50 text-emerald-950 border border-emerald-300 font-semibold shadow-2xs">
-                    <Sparkles className="w-3 h-3 text-emerald-600" />
-                    <span><strong>7 Nhóm Khung / Viền:</strong> Bo viền, K0-K3, K4-K9, K10, K11, Titan 1, Titan 2 (đồng nhất theo kích thước & nhóm)</span>
-                  </span>
+                {activeCostTab === 'dissected' && (
+                  <div className="mt-1.5 flex items-center gap-2 flex-wrap text-[11px]">
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg bg-emerald-50 text-emerald-950 border border-emerald-300 font-semibold shadow-2xs">
+                      <Sparkles className="w-3 h-3 text-emerald-600" />
+                      <span><strong>7 Nhóm Khung / Viền:</strong> Bo viền, K0-K3, K4-K9, K10, K11, Titan 1, Titan 2</span>
+                    </span>
 
-                  <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg bg-indigo-50 text-indigo-950 border border-indigo-300 font-semibold shadow-2xs">
-                    <Sparkles className="w-3 h-3 text-indigo-600" />
-                    <span><strong>Mực, Giấy & Khác:</strong> Đồng nhất theo kích thước ảnh (không phân biệt chất liệu ảnh)</span>
-                  </span>
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg bg-indigo-50 text-indigo-950 border border-indigo-300 font-semibold shadow-2xs">
+                      <Sparkles className="w-3 h-3 text-indigo-600" />
+                      <span><strong>Mực, Giấy & Khác:</strong> Đồng nhất theo kích thước ảnh</span>
+                    </span>
 
-                  <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg bg-teal-50 text-teal-950 border border-teal-300 font-semibold shadow-2xs">
-                    <Sparkles className="w-3 h-3 text-teal-600" />
-                    <span><strong>Cốt Vật Tư:</strong> Tự động đồng bộ từ Bảng Giá Cốt (MDF 9li, MDF 12li, Fomex 9li)</span>
-                  </span>
-
-                  <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg bg-amber-50 text-amber-950 border border-amber-300 font-semibold shadow-2xs">
-                    <Sparkles className="w-3 h-3 text-amber-600" />
-                    <span><strong>Màng Ép:</strong> Tự động tham chiếu theo [Kích thước] x [5 Chất liệu: Lụa, Mika, HD Gương, HD Pro, 4K]</span>
-                  </span>
-                </div>
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg bg-teal-50 text-teal-950 border border-teal-300 font-semibold shadow-2xs">
+                      <Sparkles className="w-3 h-3 text-teal-600" />
+                      <span><strong>Cốt Vật Tư:</strong> Đồng bộ từ Bảng Giá Cốt</span>
+                    </span>
+                  </div>
+                )}
               </div>
             </div>
           </div>
 
           <div className="flex items-center gap-2 flex-wrap shrink-0">
-            <button
-              type="button"
-              onClick={handleApplyAutoFillAndSave}
-              disabled={isSaving}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-950 border border-emerald-300 text-xs font-bold transition cursor-pointer shadow-2xs disabled:opacity-50"
-              title="Tự động áp dụng tất cả các giá chuẩn tham chiếu (khung, bo viền, mục khác) cho các ô còn trống và lưu lên Cloud"
-            >
-              <Sparkles className="w-3.5 h-3.5 text-emerald-600" />
-              <span>Điền Tự Động & Đồng Bộ</span>
-            </button>
+            {activeCostTab === 'dissected' && (
+              <>
+                <button
+                  type="button"
+                  onClick={handleApplyAutoFillAndSave}
+                  disabled={isSaving}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-950 border border-emerald-300 text-xs font-bold transition cursor-pointer shadow-2xs disabled:opacity-50"
+                  title="Tự động áp dụng tất cả các giá chuẩn tham chiếu cho các ô còn trống"
+                >
+                  <Sparkles className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>Điền Tự Động & Đồng Bộ</span>
+                </button>
 
-            <button
-              type="button"
-              onClick={() => {
-                const { cleanedMap, count } = handleSanitizeMismatchedFrameCosts(costMap);
-                setCostMap(cleanedMap);
-                saveProductCostsToFirestore(cleanedMap).catch(err => console.error(err));
-                showToast(count > 0
-                  ? `Đã rà soát & xóa bỏ ${count} mã bị gán nhầm nhóm khung K0-K3!`
-                  : 'Toàn bộ bảng đã chuẩn xác, không có mã nào bị gán nhầm nhóm khung!');
-              }}
-              disabled={isSaving}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-50 hover:bg-amber-100 text-amber-950 border border-amber-300 text-xs font-bold transition cursor-pointer shadow-2xs disabled:opacity-50"
-              title="Rà soát toàn bộ bảng từ 13x18 đến 110x180, xóa bỏ các giá trị bị tự động điền sai nhóm khung trước đó"
-            >
-              <RefreshCw className="w-3.5 h-3.5 text-amber-700" />
-              <span>Rà Soát Nhóm Khung</span>
-            </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const { cleanedMap, count } = handleSanitizeMismatchedFrameCosts(costMap);
+                    setCostMap(cleanedMap);
+                    saveProductCostsToFirestore(cleanedMap).catch(err => console.error(err));
+                    showToast(count > 0
+                      ? `Đã rà soát & xóa bỏ ${count} mã bị gán nhầm nhóm khung!`
+                      : 'Toàn bộ bảng đã chuẩn xác, không có mã nào bị gán nhầm nhóm khung!');
+                  }}
+                  disabled={isSaving}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-50 hover:bg-amber-100 text-amber-950 border border-amber-300 text-xs font-bold transition cursor-pointer shadow-2xs disabled:opacity-50"
+                  title="Rà soát toàn bộ bảng xóa bỏ các giá trị bị tự động điền sai nhóm khung"
+                >
+                  <RefreshCw className="w-3.5 h-3.5 text-amber-700" />
+                  <span>Rà Soát Nhóm Khung</span>
+                </button>
+              </>
+            )}
 
             <button
               type="button"
@@ -1796,12 +2176,16 @@ export const ProductCostAnalyticsTable: React.FC<ProductCostAnalyticsTableProps>
         {/* 2 SUMMARY STATS CARDS */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-slate-100">
           <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl">
-            <span className="text-[11px] text-slate-500 font-bold block">Tổng số mã theo dõi</span>
+            <span className="text-[11px] text-slate-500 font-bold block">Tổng số mã đang theo dõi</span>
             <div className="flex items-baseline gap-2 mt-1">
-              <span className="font-mono text-xl sm:text-2xl font-black text-slate-900">{statsSummary.totalItems} mã</span>
-              <span className="text-[11px] font-semibold text-emerald-700">
-                (Đã nhập: {statsSummary.filledItems}/{statsSummary.totalItems})
+              <span className="font-mono text-xl sm:text-2xl font-black text-slate-900">
+                {activeCostTab === 'dissected' ? statsSummary.totalItems : importedCustomRows.length} mã
               </span>
+              {activeCostTab === 'dissected' && (
+                <span className="text-[11px] font-semibold text-emerald-700">
+                  (Đã nhập: {statsSummary.filledItems}/{statsSummary.totalItems})
+                </span>
+              )}
             </div>
           </div>
 
@@ -1809,10 +2193,17 @@ export const ProductCostAnalyticsTable: React.FC<ProductCostAnalyticsTableProps>
             <span className="text-[11px] text-amber-800 font-bold block">Tỷ Suất LNG / Giá Bán TB</span>
             <div className="flex items-baseline gap-2 mt-1">
               <span className="font-mono text-xl sm:text-2xl font-black text-amber-950">
-                {statsSummary.avgMarginOnPrice > 0 ? `${statsSummary.avgMarginOnPrice}%` : '—'}
+                {activeCostTab === 'dissected'
+                  ? (statsSummary.avgMarginOnPrice > 0 ? `${statsSummary.avgMarginOnPrice}%` : '—')
+                  : (() => {
+                      const filled = importedCustomRows.filter(r => r.studioPrice > 0);
+                      if (filled.length === 0) return '—';
+                      const avg = filled.reduce((s, r) => s + r.marginOnPrice, 0) / filled.length;
+                      return `${Math.round(avg * 10) / 10}%`;
+                    })()}
               </span>
               <span className="text-[10px] text-amber-700">
-                (Biên lãi gộp)
+                (Biên lợi nhuận gộp)
               </span>
             </div>
           </div>
@@ -1826,7 +2217,7 @@ export const ProductCostAnalyticsTable: React.FC<ProductCostAnalyticsTableProps>
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Tìm theo mã hàng (VD: LVST, HDST, 4K, K456, TT2) hoặc kích thước..."
+              placeholder="Tìm theo mã hàng (VD: Abat, ABMP, NEPST...) hoặc tên sản phẩm..."
               className="w-full pl-9 pr-3 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-amber-500 outline-hidden"
             />
             {searchQuery && (
@@ -1840,424 +2231,719 @@ export const ProductCostAnalyticsTable: React.FC<ProductCostAnalyticsTableProps>
             )}
           </div>
 
-          <div className="flex items-center gap-1.5 flex-wrap">
-            <span className="text-xs text-slate-500 font-medium">Lọc:</span>
-            {[
-              { id: 'all' as const, label: `Tất cả (${compiledRows.length})` },
-              { id: 'filled' as const, label: `Đã có giá vốn (${statsSummary.filledItems})` },
-              { id: 'empty' as const, label: `Chưa nhập (${statsSummary.totalItems - statsSummary.filledItems})` }
-            ].map(tab => (
-              <button
-                key={tab.id}
-                type="button"
-                onClick={() => setFilterStatus(tab.id)}
-                className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
-                  filterStatus === tab.id
-                    ? 'bg-slate-900 text-white shadow-2xs'
-                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                }`}
-              >
-                {tab.label}
-              </button>
-            ))}
-          </div>
+          {activeCostTab === 'dissected' && (
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <span className="text-xs text-slate-500 font-medium">Lọc:</span>
+              {[
+                { id: 'all' as const, label: `Tất cả (${dissectedRows.length})` },
+                { id: 'filled' as const, label: `Đã có giá vốn (${statsSummary.filledItems})` },
+                { id: 'empty' as const, label: `Chưa nhập (${statsSummary.totalItems - statsSummary.filledItems})` }
+              ].map(tab => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setFilterStatus(tab.id)}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
+                    filterStatus === tab.id
+                      ? 'bg-slate-900 text-white shadow-2xs'
+                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 
-      {/* SPREADSHEET TABLE */}
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
-        <div className="overflow-x-auto max-h-[75vh]">
-          <table className="w-full text-left text-xs border-collapse">
-            <thead className="sticky top-0 z-20 bg-slate-900 text-white font-bold border-b border-slate-800 shadow-xs">
-              <tr>
-                <th className="py-3 px-2 w-10 text-center bg-slate-950 font-mono text-[11px]">STT</th>
-                <th className="py-3 px-3 w-36 text-amber-300 font-mono text-xs">Mã Sản Phẩm</th>
-                <th className="py-3 px-3 min-w-[200px]">Tên và Kích Thước Sản Phẩm</th>
-                <th className="py-3 px-2 w-24 text-center bg-slate-800/80" title="Quy tắc 3: Dùng chung 1 mức giá Mực cho toàn bộ sản phẩm cùng kích thước. Tự động lấy giá đã có hoặc đã điền thủ công.">
-                  Mực (đ)
-                  <span className="block text-[9px] text-amber-300 font-normal">Đồng nhất khổ</span>
-                </th>
-                <th className="py-3 px-2 w-24 text-center bg-slate-800/80" title="Quy tắc 3: Dùng chung 1 mức giá Giấy cho toàn bộ sản phẩm cùng kích thước. Tự động lấy giá đã có hoặc đã điền thủ công.">
-                  Giấy (đ)
-                  <span className="block text-[9px] text-amber-300 font-normal">Đồng nhất khổ</span>
-                </th>
-                <th
-                  className="py-3 px-2 w-28 text-center bg-slate-800/80"
-                  title="Tự động đồng bộ từ Bảng Giá Cốt Vật Tư theo [Loại cốt vật tư] x [Kích thước ảnh]"
-                >
-                  Ván/Fomex (đ)
-                  <span className="block text-[9px] text-emerald-300 font-normal">Đồng bộ giá cốt</span>
-                </th>
-                <th
-                  className="py-3 px-2 w-28 text-center bg-slate-800/80"
-                  title="Quy tắc màng ép: Giá chỉ phụ thuộc vào Kích thước ảnh và 5 chất liệu (Lụa, Mika, HD Gương, HD Pro, 4K). Không phụ thuộc vào loại khung hay bo viền."
-                >
-                  Màng Ép (đ)
-                  <span className="block text-[9px] text-emerald-300 font-normal">5 chất liệu chuẩn</span>
-                </th>
-                <th className="py-3 px-2 w-28 text-center bg-slate-800/80" title="Quy tắc 1 & 2: Phân loại 7 nhóm (Bo viền, K0-K3, K4-K9, K10, K11, Titan 1, Titan 2). Giá bằng nhau tuyệt đối theo kích thước và nhóm khung, không phân biệt chất liệu.">
-                  Khung/Viền (đ)
-                  <span className="block text-[9px] text-amber-300 font-normal">7 nhóm chuẩn</span>
-                </th>
-                <th className="py-3 px-2 w-24 text-center bg-slate-800/80" title="Quy tắc 3: Dùng chung 1 mức giá Khác cho toàn bộ sản phẩm cùng kích thước. Tự động lấy giá đã có hoặc đã điền thủ công.">
-                  Khác (đ)
-                  <span className="block text-[9px] text-amber-300 font-normal">Đồng nhất khổ</span>
-                </th>
-                <th className="py-3 px-3 w-32 text-right bg-amber-950/70 text-amber-300 border-l border-amber-900/50">
-                  Tổng Giá Vốn
-                </th>
-                <th className="py-3 px-3 w-32 text-right bg-indigo-950/70 text-indigo-300 border-l border-indigo-900/50">
-                  Giá Bán Sỉ/Studio
-                </th>
-                <th className="py-3 px-3 w-36 text-right bg-emerald-950/70 text-emerald-300 border-l border-emerald-900/50">
-                  Lợi Nhuận Gộp
-                </th>
-                <th className="py-3 px-3 w-32 text-center bg-amber-900/80 text-amber-200 border-l border-amber-800" title="Tỷ suất LNG / Giá bán Studio (%) = (Lợi Nhuận Gộp / Giá Bán Sỉ) * 100%">
-                  Tỷ Suất / Giá Bán
-                </th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-200 bg-white">
-              {filteredRows.map((row) => {
-                // Color badge for profit margin on price
-                const getMarginBadgeClass = (margin: number, hasCost: boolean) => {
-                  if (!hasCost) return 'bg-slate-100 text-slate-400';
-                  if (margin >= 60) return 'bg-emerald-100 text-emerald-900 font-extrabold border border-emerald-300';
-                  if (margin >= 40) return 'bg-sky-100 text-sky-900 font-bold border border-sky-300';
-                  if (margin >= 20) return 'bg-amber-100 text-amber-900 font-bold border border-amber-300';
-                  if (margin > 0) return 'bg-orange-100 text-orange-900 font-bold border border-orange-300';
-                  return 'bg-rose-100 text-rose-900 font-black border border-rose-300';
-                };
+      {/* SPREADSHEET TABLE: TAB 2 - DANH MỤC SẢN PHẨM NHẬP THÀNH PHẨM */}
+      {activeCostTab === 'imported' ? (
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden space-y-0">
+          <div className="p-4 bg-slate-900 text-white flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800">
+            <div>
+              <h4 className="font-extrabold text-sm sm:text-base text-amber-300 flex items-center gap-2">
+                <Layers className="w-4 h-4 text-amber-400" />
+                DANH MỤC SẢN PHẨM NHẬP THÀNH PHẨM & ĐỊNH MỨC TÙY CHỈNH
+              </h4>
+              <p className="text-xs text-slate-300 mt-0.5">
+                Bảng dành riêng cho các mã sản phẩm mua nguyên chiếc / nhập thành phẩm hoặc giá vốn tùy chỉnh (Abat, Album mở phẳng, Khung nẹp gia cố...). KHÔNG bóc tách chi tiết vật tư Mực, Giấy, Ván, Màng, Khung.
+              </p>
+            </div>
+            <div className="flex items-center gap-3 shrink-0">
+              <button
+                type="button"
+                onClick={handleOpenAddModal}
+                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs rounded-xl shadow-md transition-all cursor-pointer"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Thêm Sản Phẩm Mới</span>
+              </button>
+              <div className="text-xs bg-amber-500/20 text-amber-300 border border-amber-500/40 px-3 py-1.5 rounded-xl font-bold font-mono">
+                Hiển thị {filteredImportedRows.length} Sản phẩm
+              </div>
+            </div>
+          </div>
 
-                return (
-                  <tr key={`${row.code}_${row.stt}`} className="hover:bg-amber-50/30 transition-colors group">
-                    {/* STT */}
-                    <td className="py-2.5 px-2 text-center text-slate-400 font-mono font-medium text-[11px] bg-slate-50/50">
-                      {row.stt}
-                    </td>
+          <div className="overflow-x-auto max-h-[70vh]">
+            <table className="w-full text-left text-xs border-collapse">
+              <thead className="sticky top-0 z-20 bg-slate-800 text-white font-bold border-b border-slate-700 shadow-xs">
+                <tr>
+                  <th className="py-3.5 px-3 w-12 text-center bg-slate-950 font-mono text-[11px]">STT</th>
+                  <th className="py-3.5 px-4 w-44 text-amber-300 font-mono text-xs">Mã Sản Phẩm</th>
+                  <th className="py-3.5 px-4 min-w-[220px]">Tên & Kích Thước Sản Phẩm</th>
+                  <th className="py-3.5 px-4 w-52 text-right bg-slate-900 text-amber-300 border-l border-slate-700">
+                    Giá Vốn Nhập / Chi Phí Thành Phẩm (VNĐ)
+                    <span className="block text-[9px] text-amber-200 font-normal">Cho phép tự nhập thủ công</span>
+                  </th>
+                  <th className="py-3.5 px-4 w-48 text-right bg-slate-900 text-indigo-300 border-l border-slate-700">
+                    Giá Bán Sỉ/Studio (VNĐ)
+                    <span className="block text-[9px] text-indigo-200 font-normal">Liên kết Bảng giá SP</span>
+                  </th>
+                  <th className="py-3.5 px-4 w-48 text-right bg-emerald-950 text-emerald-300 border-l border-slate-700">
+                    Lợi Nhuận Gộp (VNĐ)
+                    <span className="block text-[9px] text-emerald-200 font-normal">[Giá Bán Sỉ] - [Giá Vốn Nhập]</span>
+                  </th>
+                  <th className="py-3.5 px-4 w-40 text-center bg-amber-950 text-amber-200 border-l border-slate-700">
+                    Tỷ Suất LNG (%)
+                    <span className="block text-[9px] text-amber-300 font-normal">([LNG] / [Giá Bán Sỉ]) * 100</span>
+                  </th>
+                  <th className="py-3.5 px-3 w-28 text-center bg-slate-950 text-slate-300 border-l border-slate-700">
+                    Thao Tác
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200 bg-white">
+                {filteredImportedRows.map((row) => {
+                  const getMarginBadge = (margin: number, hasPrice: boolean) => {
+                    if (!hasPrice) return 'bg-slate-100 text-slate-400 border-slate-200';
+                    if (margin >= 50) return 'bg-emerald-100 text-emerald-950 border-emerald-300 font-extrabold';
+                    if (margin >= 30) return 'bg-sky-100 text-sky-950 border-sky-300 font-bold';
+                    if (margin > 0) return 'bg-amber-100 text-amber-950 border-amber-300 font-bold';
+                    return 'bg-rose-100 text-rose-950 border-rose-300 font-black';
+                  };
 
-                    {/* Mã Sản Phẩm */}
-                    <td className="py-2.5 px-3 font-mono font-black text-amber-950 bg-amber-50/40 text-xs">
-                      {row.code}
-                    </td>
+                  return (
+                    <tr key={row.code} className="hover:bg-amber-50/40 transition-colors">
+                      <td className="py-3 px-3 text-center text-slate-400 font-mono font-medium text-[11px] bg-slate-50/50">
+                        {row.stt}
+                      </td>
 
-                    {/* Tên và Kích Thước Sản Phẩm (Tự động liên kết) */}
-                    <td className="py-2.5 px-3">
-                      <div className="font-semibold text-slate-900 text-xs">
-                        {row.name}
-                      </div>
-                      <div className="flex items-center gap-1.5 mt-0.5">
-                        <span className="font-mono text-[10px] font-bold text-slate-600 bg-slate-100 px-1.5 py-0.2 rounded">
-                          Khổ: {row.size}
+                      {/* Mã Sản Phẩm */}
+                      <td className="py-3 px-4 font-mono font-black text-amber-950 bg-amber-50/40 text-xs">
+                        <span className="px-2 py-0.5 rounded bg-amber-100/80 border border-amber-300">
+                          {row.code}
                         </span>
-                        {row.matchedProduct ? (
-                          <span className="text-[10px] text-emerald-700 font-medium flex items-center gap-0.5">
-                            <Check className="w-3 h-3 text-emerald-600" />
-                            Đã khớp bảng giá
-                          </span>
-                        ) : (
-                          <span className="text-[10px] text-slate-400 italic">
-                            (Quy chuẩn gợi ý)
+                      </td>
+
+                      {/* Tên & Kích Thước Sản Phẩm */}
+                      <td className="py-3 px-4">
+                        <div className="font-bold text-slate-900 text-xs">
+                          {row.name}
+                        </div>
+                        {row.size && (
+                          <span className="inline-block mt-0.5 font-mono text-[10px] font-bold text-slate-600 bg-slate-100 px-1.5 py-0.2 rounded">
+                            Khổ: {row.size}
                           </span>
                         )}
-                      </div>
-                    </td>
+                      </td>
 
-                    {/* 1. Mực */}
-                    <td className="py-1.5 px-1.5 text-center bg-slate-50/30">
-                      <input
-                        type="text"
-                        inputMode="numeric"
-                        value={row.ink !== undefined && row.ink > 0 ? formatNumber(row.ink) : ''}
-                        onChange={(e) => handleCostChange(row.code, 'ink', e.target.value)}
-                        placeholder="0"
-                        title={
-                          row.isInkAutoFilled
-                            ? `Tự động điền theo chuẩn chi phí mực khổ ${row.size}`
-                            : `Chi phí mực in khổ ${row.size} (tự động đồng nhất theo kích thước)`
-                        }
-                        className={`w-full px-2 py-1 bg-white border rounded-lg text-right font-mono text-xs focus:bg-amber-50/50 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-hidden ${
-                          row.isInkAutoFilled
-                            ? 'border-emerald-400 bg-emerald-50/40 text-emerald-950 font-bold'
-                            : row.ink && row.ink > 0
-                            ? 'border-slate-300 text-slate-900 font-semibold'
-                            : 'border-slate-200'
-                        }`}
-                      />
-                      {row.isInkAutoFilled ? (
-                        <div
-                          className="text-[9px] text-emerald-700 font-bold mt-0.5 text-right flex items-center justify-end gap-0.5"
-                          title={`Tự động lấy theo chuẩn chi phí mực khổ ${row.size}`}
-                        >
-                          <Sparkles className="w-2.5 h-2.5 text-emerald-600 shrink-0" />
-                          <span>Tự điền ({row.size})</span>
-                        </div>
-                      ) : (
-                        <div className="text-[9px] text-slate-500 font-medium mt-0.5 text-right px-0.5">
-                          Khổ {row.size}
-                        </div>
-                      )}
-                    </td>
+                      {/* Giá Vốn Nhập / Chi Phí Thành Phẩm (VNĐ) - Cho phép tự nhập thủ công */}
+                      <td className="py-2 px-4 text-right bg-amber-50/20 border-l border-slate-200">
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          value={row.importCost > 0 ? formatNumber(row.importCost) : ''}
+                          onChange={(e) => handleCostChange(row.code, 'importCost', e.target.value)}
+                          placeholder="Nhập giá vốn thủ công..."
+                          title="Giá vốn nhập / chi phí thành phẩm cho 1 sản phẩm. Tự động liên kết vào báo cáo Lợi Nhuận Gộp hàng ngày."
+                          className="w-40 px-2.5 py-1.5 bg-white border border-amber-300 rounded-lg text-right font-mono font-bold text-amber-950 text-xs focus:ring-2 focus:ring-amber-500 focus:bg-amber-50/50 outline-hidden shadow-2xs"
+                        />
+                      </td>
 
-                    {/* 2. Giấy */}
-                    <td className="py-1.5 px-1.5 text-center bg-slate-50/30">
-                      <input
-                        type="text"
-                        inputMode="numeric"
-                        value={row.paper !== undefined && row.paper > 0 ? formatNumber(row.paper) : ''}
-                        onChange={(e) => handleCostChange(row.code, 'paper', e.target.value)}
-                        placeholder="0"
-                        title={
-                          row.isPaperAutoFilled
-                            ? `Tự động điền theo chuẩn chi phí giấy khổ ${row.size}`
-                            : `Chi phí giấy in khổ ${row.size} (tự động đồng nhất theo kích thước)`
-                        }
-                        className={`w-full px-2 py-1 bg-white border rounded-lg text-right font-mono text-xs focus:bg-amber-50/50 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-hidden ${
-                          row.isPaperAutoFilled
-                            ? 'border-emerald-400 bg-emerald-50/40 text-emerald-950 font-bold'
-                            : row.paper && row.paper > 0
-                            ? 'border-slate-300 text-slate-900 font-semibold'
-                            : 'border-slate-200'
-                        }`}
-                      />
-                      {row.isPaperAutoFilled ? (
-                        <div
-                          className="text-[9px] text-emerald-700 font-bold mt-0.5 text-right flex items-center justify-end gap-0.5"
-                          title={`Tự động lấy theo chuẩn chi phí giấy khổ ${row.size}`}
-                        >
-                          <Sparkles className="w-2.5 h-2.5 text-emerald-600 shrink-0" />
-                          <span>Tự điền ({row.size})</span>
-                        </div>
-                      ) : (
-                        <div className="text-[9px] text-slate-500 font-medium mt-0.5 text-right px-0.5">
-                          Khổ {row.size}
-                        </div>
-                      )}
-                    </td>
-
-                    {/* 3. Ván / Fomex */}
-                    <td className="py-1.5 px-1.5 text-center bg-slate-50/30">
-                      <input
-                        type="text"
-                        inputMode="numeric"
-                        value={row.board !== undefined && row.board > 0 ? formatNumber(row.board) : ''}
-                        onChange={(e) => handleCostChange(row.code, 'board', e.target.value)}
-                        placeholder="0"
-                        title={
-                          row.coreBoardInfo && row.coreBoardInfo.category !== 'none'
-                            ? `Cốt vật tư: ${row.coreBoardInfo.label} (${row.sizeKey}) - Tự động đồng bộ từ Bảng Giá Cốt Vật Tư: ${formatCurrency(row.board || 0)}`
-                            : 'Không dùng cốt ván'
-                        }
-                        className={`w-full px-2 py-1 bg-white border rounded-lg text-right font-mono text-xs focus:bg-amber-50/50 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-hidden ${
-                          row.coreBoardInfo && row.coreBoardInfo.category !== 'none' && row.board && row.board > 0
-                            ? 'border-emerald-400 bg-emerald-50/40 text-emerald-950 font-bold'
-                            : 'border-slate-200'
-                        }`}
-                      />
-                      {row.coreBoardInfo && row.coreBoardInfo.category !== 'none' ? (
-                        <div
-                          className="text-[9px] text-emerald-700 font-bold mt-0.5 text-right flex items-center justify-end gap-0.5 px-0.5"
-                          title={`Tự động lấy trực tiếp từ Bảng Giá Cốt Vật Tư: ${row.coreBoardInfo.label} khổ ${row.sizeKey}`}
-                        >
-                          <Sparkles className="w-2.5 h-2.5 text-emerald-600 shrink-0" />
-                          <span>{row.coreBoardInfo.label} ({row.sizeKey})</span>
-                        </div>
-                      ) : (
-                        <div className="text-[9px] text-slate-400 font-medium mt-0.5 text-right px-0.5">
-                          Không cốt
-                        </div>
-                      )}
-                    </td>
-
-                    {/* 4. Màng Ép */}
-                    <td className="py-1.5 px-1.5 text-center bg-slate-50/30">
-                      <input
-                        type="text"
-                        inputMode="numeric"
-                        value={row.film !== undefined && row.film > 0 ? formatNumber(row.film) : ''}
-                        onChange={(e) => handleCostChange(row.code, 'film', e.target.value)}
-                        placeholder="0"
-                        title={
-                          row.isFilmAutoFilled
-                            ? `Tự động điền theo giá tham chiếu màng ${row.filmMaterialLabel} (${row.sizeKey}): ${formatCurrency(row.film || 0)}`
-                            : row.film && row.film > 0
-                            ? `Đơn giá màng ép đã nhập: ${formatCurrency(row.film)}`
-                            : `Nhập giá màng ép cho ${row.filmMaterialLabel || 'sản phẩm'} (${row.sizeKey})`
-                        }
-                        className={`w-full px-2 py-1 bg-white border rounded-lg text-right font-mono text-xs focus:bg-amber-50/50 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-hidden ${
-                          row.isFilmAutoFilled
-                            ? 'border-emerald-400 bg-emerald-50/40 text-emerald-950 font-bold'
-                            : row.film && row.film > 0
-                            ? 'border-amber-300 bg-amber-50/20 text-slate-900 font-bold'
-                            : 'border-slate-200 text-slate-400'
-                        }`}
-                      />
-                      {row.filmMaterialLabel ? (
-                        <div
-                          className={`text-[9px] font-bold mt-0.5 text-right flex items-center justify-end gap-0.5 px-0.5 ${
-                            row.isFilmAutoFilled ? 'text-emerald-700' : 'text-slate-500'
-                          }`}
-                          title={
-                            row.isFilmAutoFilled
-                              ? `Tự động điền theo chuẩn tham chiếu màng ${row.filmMaterialLabel} (${row.sizeKey}): ${formatCurrency(row.film || 0)}`
-                              : `Chất liệu màng ép: ${row.filmMaterialLabel} (${row.sizeKey})`
-                          }
-                        >
-                          <Sparkles className={`w-2.5 h-2.5 shrink-0 ${row.isFilmAutoFilled ? 'text-emerald-600' : 'text-slate-400'}`} />
-                          <span>{row.filmMaterialLabel} ({row.sizeKey})</span>
-                        </div>
-                      ) : (
-                        <div className="text-[9px] text-slate-400 mt-0.5 text-right px-0.5">
-                          Khổ {row.sizeKey}
-                        </div>
-                      )}
-                    </td>
-
-                    {/* 5. Khung / Viền */}
-                    <td className="py-1.5 px-1.5 text-center bg-slate-50/30">
-                      <input
-                        type="text"
-                        inputMode="numeric"
-                        value={row.frame !== undefined && row.frame > 0 ? formatNumber(row.frame) : ''}
-                        onChange={(e) => handleCostChange(row.code, 'frame', e.target.value)}
-                        placeholder="0"
-                        title={
-                          row.isFrameAutoFilled
-                            ? `Tự động điền theo chuẩn tham chiếu ${row.frameCatLabel || 'Khung/Viền'} khổ ${row.size}`
-                            : undefined
-                        }
-                        className={`w-full px-2 py-1 bg-white border rounded-lg text-right font-mono text-xs focus:bg-amber-50/50 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-hidden ${
-                          row.isFrameAutoFilled
-                            ? 'border-emerald-400 bg-emerald-50/40 text-emerald-950 font-bold'
-                            : row.frame && row.frame > 0
-                            ? 'border-slate-300 text-slate-900 font-semibold'
-                            : 'border-slate-200'
-                        }`}
-                      />
-                      {row.isFrameAutoFilled ? (
-                        <div
-                          className="text-[9px] text-emerald-700 font-bold mt-0.5 text-right flex items-center justify-end gap-0.5"
-                          title={`Tự động lấy theo chuẩn tham chiếu ${row.frameCatLabel || 'Khung/Viền'} khổ ${row.size}`}
-                        >
-                          <Sparkles className="w-2.5 h-2.5 text-emerald-600 shrink-0" />
-                          <span>Tự điền ({row.frameCatLabel})</span>
-                        </div>
-                      ) : row.frameCatLabel ? (
-                        <div className="text-[9px] text-slate-500 font-medium mt-0.5 text-right px-0.5" title={row.frameCatLabel}>
-                          {row.frameCatLabel}
-                        </div>
-                      ) : null}
-                    </td>
-
-                    {/* 6. Khác */}
-                    <td className="py-1.5 px-1.5 text-center bg-slate-50/30">
-                      <input
-                        type="text"
-                        inputMode="numeric"
-                        value={row.other !== undefined && row.other > 0 ? formatNumber(row.other) : ''}
-                        onChange={(e) => handleCostChange(row.code, 'other', e.target.value)}
-                        placeholder="0"
-                        title={
-                          row.isOtherAutoFilled
-                            ? `Tự động điền theo chuẩn chi phí khác khổ ${row.size}`
-                            : `Chi phí khác (dùng chung cho toàn bộ sản phẩm khổ ${row.size})`
-                        }
-                        className={`w-full px-2 py-1 bg-white border rounded-lg text-right font-mono text-xs focus:bg-amber-50/50 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-hidden ${
-                          row.isOtherAutoFilled
-                            ? 'border-emerald-400 bg-emerald-50/40 text-emerald-950 font-bold'
-                            : row.other && row.other > 0
-                            ? 'border-slate-300 text-slate-900 font-semibold'
-                            : 'border-slate-200'
-                        }`}
-                      />
-                      {row.isOtherAutoFilled ? (
-                        <div
-                          className="text-[9px] text-emerald-700 font-bold mt-0.5 text-right flex items-center justify-end gap-0.5"
-                          title={`Tự động lấy theo chuẩn chi phí khác khổ ${row.size}`}
-                        >
-                          <Sparkles className="w-2.5 h-2.5 text-emerald-600 shrink-0" />
-                          <span>Tự điền theo khổ</span>
-                        </div>
-                      ) : (
-                        <div className="text-[9px] text-slate-500 font-medium mt-0.5 text-right px-0.5">
-                          Khổ {row.size}
-                        </div>
-                      )}
-                    </td>
-
-                    {/* TỔNG GIÁ VỐN (Tự động tính) */}
-                    <td className="py-2.5 px-3 text-right font-mono font-bold text-slate-900 bg-amber-50/30 border-l border-slate-200 text-xs">
-                      {row.hasCostData ? (
-                        <span className="text-amber-950 font-black">
-                          {formatCurrency(row.totalCost)}
-                        </span>
-                      ) : (
-                        <span className="text-slate-400 italic text-[11px]">—</span>
-                      )}
-                    </td>
-
-                    {/* GIÁ BÁN SỈ / STUDIO (Tự động liên kết từ Bảng Giá SP, có thể sửa trực tiếp) */}
-                    <td className="py-1.5 px-2 text-right font-mono font-black text-indigo-900 bg-indigo-50/20 border-l border-slate-200 text-xs">
-                      <div className="flex items-center justify-end">
+                      {/* Giá Bán Sỉ/Studio (VNĐ) */}
+                      <td className="py-2 px-4 text-right bg-indigo-50/20 border-l border-slate-200">
                         <input
                           type="text"
                           inputMode="numeric"
                           value={row.studioPrice > 0 ? formatNumber(row.studioPrice) : ''}
                           onChange={(e) => handleCostChange(row.code, 'manualStudioPrice', e.target.value)}
-                          placeholder="Chưa cài"
-                          title="Giá Bán Sỉ / Studio (Tự động liên kết từ Bảng Giá SP, có thể sửa trực tiếp)"
-                          className="w-24 px-1.5 py-1 bg-white/70 hover:bg-white focus:bg-white border border-slate-200 focus:border-indigo-500 rounded-lg text-right font-mono text-xs font-black text-indigo-950 focus:ring-1 focus:ring-indigo-500 outline-hidden"
+                          placeholder="Nhập giá studio..."
+                          title="Giá bán sỉ / Studio từ Bảng giá sản phẩm, có thể nhập điều chỉnh"
+                          className="w-36 px-2.5 py-1.5 bg-white border border-indigo-300 rounded-lg text-right font-mono font-bold text-indigo-950 text-xs focus:ring-2 focus:ring-indigo-500 outline-hidden shadow-2xs"
                         />
-                      </div>
-                    </td>
+                      </td>
 
-                    {/* LỢI NHUẬN GỘP ƯỚC TÍNH (Giá Bán - Giá Vốn) */}
-                    <td className="py-2.5 px-3 text-right font-mono font-black border-l border-slate-200 text-xs bg-emerald-50/20">
-                      {row.hasCostData && row.studioPrice > 0 ? (
-                        <span className={row.grossProfit >= 0 ? 'text-emerald-700' : 'text-rose-600'}>
-                          {row.grossProfit < 0 ? '-' : ''}{formatCurrency(Math.abs(row.grossProfit))}
-                        </span>
-                      ) : (
-                        <span className="text-slate-400 italic text-[11px]">—</span>
-                      )}
-                    </td>
+                      {/* Lợi Nhuận Gộp (VNĐ) = [Giá Bán Sỉ] - [Giá Vốn Nhập] */}
+                      <td className="py-3 px-4 text-right font-mono font-extrabold text-emerald-700 bg-emerald-50/30 border-l border-slate-200 text-xs">
+                        {row.studioPrice > 0 ? (
+                          <span className={row.grossProfit >= 0 ? 'text-emerald-700' : 'text-rose-600 font-black'}>
+                            {row.grossProfit < 0 ? '-' : ''}{formatCurrency(Math.abs(row.grossProfit))}
+                          </span>
+                        ) : (
+                          <span className="text-slate-400 italic">—</span>
+                        )}
+                      </td>
 
-                    {/* TỶ SUẤT LNG / GIÁ BÁN (%) (Hàm yêu cầu của người dùng) */}
-                    <td className="py-2.5 px-3 text-center border-l border-slate-200">
-                      {row.hasCostData && row.studioPrice > 0 ? (
-                        <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-mono ${getMarginBadgeClass(row.marginOnPrice, true)}`}>
-                          {row.marginOnPrice >= 0 ? (
-                            <ArrowUpRight className="w-3 h-3" />
+                      {/* Tỷ Suất Lợi Nhuận Gộp (%) */}
+                      <td className="py-3 px-4 text-center border-l border-slate-200">
+                        <span className={`inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-mono border shadow-2xs ${getMarginBadge(row.marginOnPrice, row.studioPrice > 0)}`}>
+                          {row.studioPrice > 0 ? (
+                            <>
+                              {row.marginOnPrice >= 0 ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownRight className="w-3 h-3" />}
+                              <span>{row.marginOnPrice.toFixed(1)}%</span>
+                            </>
                           ) : (
-                            <ArrowDownRight className="w-3 h-3" />
+                            <span>—</span>
                           )}
-                          <span>{row.marginOnPrice.toFixed(1)}%</span>
                         </span>
-                      ) : (
-                        <span className="text-slate-400 text-[11px] italic">—</span>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+                      </td>
 
-        {/* TABLE FOOTER / GUIDELINES */}
-        <div className="p-4 bg-slate-50 border-t border-slate-200 text-xs text-slate-600 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <Info className="w-4 h-4 text-amber-600 shrink-0" />
-            <span>
-              <strong>Công thức:</strong> Tổng Giá Vốn = (Mực + Giấy + Ván/Fomex + Màng Ép + Khung/Viền + Khác). Lợi Nhuận Gộp = (Giá Studio - Giá Vốn). Tỷ Suất / Giá Bán = (LNG / Giá Studio) * 100%.
-            </span>
+                      {/* Thao tác Sửa / Xóa */}
+                      <td className="py-3 px-3 text-center border-l border-slate-200">
+                        <div className="flex items-center justify-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => handleOpenEditModal(row)}
+                            title="Sửa thông tin tên, khổ, giá"
+                            className="p-1.5 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors cursor-pointer"
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteImportedProduct(row.code, row.name)}
+                            title="Xóa sản phẩm này khỏi bảng"
+                            className="p-1.5 text-slate-500 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
 
-          <div className="flex items-center gap-2 shrink-0 text-[11px] text-slate-500 font-medium">
-            <span>💾 Dữ liệu tự động đồng bộ thời gian thực lên Firebase Cloud Firestore</span>
+          <div className="p-4 bg-slate-50 border-t border-slate-200 text-xs text-slate-600 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <Info className="w-4 h-4 text-amber-600 shrink-0" />
+              <span>
+                <strong>Tính liên kết hệ thống:</strong> Khi bán các sản phẩm trong bảng này, hệ thống sẽ tự động lấy [Giá Vốn Nhập] ở đây để tính vào cột "Chi Phí Nguyên Vật Liệu" & "Lợi Nhuận Gộp Ước Tính" trong báo cáo doanh số phát sinh hàng ngày và 12 tháng.
+              </span>
+            </div>
           </div>
         </div>
-      </div>
+      ) : (
+        /* SPREADSHEET TABLE: TAB 1 - BÓC TÁCH CHI TIẾT VẬT TƯ */
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
+          <div className="overflow-x-auto max-h-[75vh]">
+            <table className="w-full text-left text-xs border-collapse">
+              <thead className="sticky top-0 z-20 bg-slate-900 text-white font-bold border-b border-slate-800 shadow-xs">
+                <tr>
+                  <th className="py-3 px-2 w-10 text-center bg-slate-950 font-mono text-[11px]">STT</th>
+                  <th className="py-3 px-3 w-36 text-amber-300 font-mono text-xs">Mã Sản Phẩm</th>
+                  <th className="py-3 px-3 min-w-[200px]">Tên và Kích Thước Sản Phẩm</th>
+                  <th className="py-3 px-2 w-24 text-center bg-slate-800/80" title="Quy tắc 3: Dùng chung 1 mức giá Mực cho toàn bộ sản phẩm cùng kích thước. Tự động lấy giá đã có hoặc đã điền thủ công.">
+                    Mực (đ)
+                    <span className="block text-[9px] text-amber-300 font-normal">Đồng nhất khổ</span>
+                  </th>
+                  <th className="py-3 px-2 w-24 text-center bg-slate-800/80" title="Quy tắc 3: Dùng chung 1 mức giá Giấy cho toàn bộ sản phẩm cùng kích thước. Tự động lấy giá đã có hoặc đã điền thủ công.">
+                    Giấy (đ)
+                    <span className="block text-[9px] text-amber-300 font-normal">Đồng nhất khổ</span>
+                  </th>
+                  <th
+                    className="py-3 px-2 w-28 text-center bg-slate-800/80"
+                    title="Tự động đồng bộ từ Bảng Giá Cốt Vật Tư theo [Loại cốt vật tư] x [Kích thước ảnh]"
+                  >
+                    Ván/Fomex (đ)
+                    <span className="block text-[9px] text-emerald-300 font-normal">Đồng bộ giá cốt</span>
+                  </th>
+                  <th
+                    className="py-3 px-2 w-28 text-center bg-slate-800/80"
+                    title="Quy tắc màng ép: Giá chỉ phụ thuộc vào Kích thước ảnh và 5 chất liệu (Lụa, Mika, HD Gương, HD Pro, 4K). Không phụ thuộc vào loại khung hay bo viền."
+                  >
+                    Màng Ép (đ)
+                    <span className="block text-[9px] text-emerald-300 font-normal">5 chất liệu chuẩn</span>
+                  </th>
+                  <th className="py-3 px-2 w-28 text-center bg-slate-800/80" title="Quy tắc 1 & 2: Phân loại 7 nhóm (Bo viền, K0-K3, K4-K9, K10, K11, Titan 1, Titan 2). Giá bằng nhau tuyệt đối theo kích thước và nhóm khung, không phân biệt chất liệu.">
+                    Khung/Viền (đ)
+                    <span className="block text-[9px] text-amber-300 font-normal">7 nhóm chuẩn</span>
+                  </th>
+                  <th className="py-3 px-2 w-24 text-center bg-slate-800/80" title="Quy tắc 3: Dùng chung 1 mức giá Khác cho toàn bộ sản phẩm cùng kích thước. Tự động lấy giá đã có hoặc đã điền thủ công.">
+                    Khác (đ)
+                    <span className="block text-[9px] text-amber-300 font-normal">Đồng nhất khổ</span>
+                  </th>
+                  <th className="py-3 px-3 w-32 text-right bg-amber-950/70 text-amber-300 border-l border-amber-900/50">
+                    Tổng Giá Vốn
+                  </th>
+                  <th className="py-3 px-3 w-32 text-right bg-indigo-950/70 text-indigo-300 border-l border-indigo-900/50">
+                    Giá Bán Sỉ/Studio
+                  </th>
+                  <th className="py-3 px-3 w-36 text-right bg-emerald-950/70 text-emerald-300 border-l border-emerald-900/50">
+                    Lợi Nhuận Gộp
+                  </th>
+                  <th className="py-3 px-3 w-32 text-center bg-amber-900/80 text-amber-200 border-l border-amber-800" title="Tỷ suất LNG / Giá bán Studio (%) = (Lợi Nhuận Gộp / Giá Bán Sỉ) * 100%">
+                    Tỷ Suất / Giá Bán
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200 bg-white">
+                {filteredDissectedRows.map((row) => {
+                  // Color badge for profit margin on price
+                  const getMarginBadgeClass = (margin: number, hasCost: boolean) => {
+                    if (!hasCost) return 'bg-slate-100 text-slate-400';
+                    if (margin >= 60) return 'bg-emerald-100 text-emerald-900 font-extrabold border border-emerald-300';
+                    if (margin >= 40) return 'bg-sky-100 text-sky-900 font-bold border border-sky-300';
+                    if (margin >= 20) return 'bg-amber-100 text-amber-900 font-bold border border-amber-300';
+                    if (margin > 0) return 'bg-orange-100 text-orange-900 font-bold border border-orange-300';
+                    return 'bg-rose-100 text-rose-900 font-black border border-rose-300';
+                  };
+
+                  return (
+                    <tr key={`${row.code}_${row.stt}`} className="hover:bg-amber-50/30 transition-colors group">
+                      {/* STT */}
+                      <td className="py-2.5 px-2 text-center text-slate-400 font-mono font-medium text-[11px] bg-slate-50/50">
+                        {row.stt}
+                      </td>
+
+                      {/* Mã Sản Phẩm */}
+                      <td className="py-2.5 px-3 font-mono font-black text-amber-950 bg-amber-50/40 text-xs">
+                        {row.code}
+                      </td>
+
+                      {/* Tên và Kích Thước Sản Phẩm (Tự động liên kết) */}
+                      <td className="py-2.5 px-3">
+                        <div className="font-semibold text-slate-900 text-xs">
+                          {row.name}
+                        </div>
+                        <div className="flex items-center gap-1.5 mt-0.5">
+                          <span className="font-mono text-[10px] font-bold text-slate-600 bg-slate-100 px-1.5 py-0.2 rounded">
+                            Khổ: {row.size}
+                          </span>
+                          {row.matchedProduct ? (
+                            <span className="text-[10px] text-emerald-700 font-medium flex items-center gap-0.5">
+                              <Check className="w-3 h-3 text-emerald-600" />
+                              Đã khớp bảng giá
+                            </span>
+                          ) : (
+                            <span className="text-[10px] text-slate-400 italic">
+                              (Quy chuẩn gợi ý)
+                            </span>
+                          )}
+                        </div>
+                      </td>
+
+                      {/* 1. Mực */}
+                      <td className="py-1.5 px-1.5 text-center bg-slate-50/30">
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          value={row.ink !== undefined && row.ink > 0 ? formatNumber(row.ink) : ''}
+                          onChange={(e) => handleCostChange(row.code, 'ink', e.target.value)}
+                          placeholder="0"
+                          title={
+                            row.isInkAutoFilled
+                              ? `Tự động điền theo chuẩn chi phí mực khổ ${row.size}`
+                              : `Chi phí mực in khổ ${row.size} (tự động đồng nhất theo kích thước)`
+                          }
+                          className={`w-full px-2 py-1 bg-white border rounded-lg text-right font-mono text-xs focus:bg-amber-50/50 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-hidden ${
+                            row.isInkAutoFilled
+                              ? 'border-emerald-400 bg-emerald-50/40 text-emerald-950 font-bold'
+                              : row.ink && row.ink > 0
+                              ? 'border-slate-300 text-slate-900 font-semibold'
+                              : 'border-slate-200'
+                          }`}
+                        />
+                        {row.isInkAutoFilled ? (
+                          <div
+                            className="text-[9px] text-emerald-700 font-bold mt-0.5 text-right flex items-center justify-end gap-0.5"
+                            title={`Tự động lấy theo chuẩn chi phí mực khổ ${row.size}`}
+                          >
+                            <Sparkles className="w-2.5 h-2.5 text-emerald-600 shrink-0" />
+                            <span>Tự điền ({row.size})</span>
+                          </div>
+                        ) : (
+                          <div className="text-[9px] text-slate-500 font-medium mt-0.5 text-right px-0.5">
+                            Khổ {row.size}
+                          </div>
+                        )}
+                      </td>
+
+                      {/* 2. Giấy */}
+                      <td className="py-1.5 px-1.5 text-center bg-slate-50/30">
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          value={row.paper !== undefined && row.paper > 0 ? formatNumber(row.paper) : ''}
+                          onChange={(e) => handleCostChange(row.code, 'paper', e.target.value)}
+                          placeholder="0"
+                          title={
+                            row.isPaperAutoFilled
+                              ? `Tự động điền theo chuẩn chi phí giấy khổ ${row.size}`
+                              : `Chi phí giấy in khổ ${row.size} (tự động đồng nhất theo kích thước)`
+                          }
+                          className={`w-full px-2 py-1 bg-white border rounded-lg text-right font-mono text-xs focus:bg-amber-50/50 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-hidden ${
+                            row.isPaperAutoFilled
+                              ? 'border-emerald-400 bg-emerald-50/40 text-emerald-950 font-bold'
+                              : row.paper && row.paper > 0
+                              ? 'border-slate-300 text-slate-900 font-semibold'
+                              : 'border-slate-200'
+                          }`}
+                        />
+                        {row.isPaperAutoFilled ? (
+                          <div
+                            className="text-[9px] text-emerald-700 font-bold mt-0.5 text-right flex items-center justify-end gap-0.5"
+                            title={`Tự động lấy theo chuẩn chi phí giấy khổ ${row.size}`}
+                          >
+                            <Sparkles className="w-2.5 h-2.5 text-emerald-600 shrink-0" />
+                            <span>Tự điền ({row.size})</span>
+                          </div>
+                        ) : (
+                          <div className="text-[9px] text-slate-500 font-medium mt-0.5 text-right px-0.5">
+                            Khổ {row.size}
+                          </div>
+                        )}
+                      </td>
+
+                      {/* 3. Ván / Fomex */}
+                      <td className="py-1.5 px-1.5 text-center bg-slate-50/30">
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          value={row.board !== undefined && row.board > 0 ? formatNumber(row.board) : ''}
+                          onChange={(e) => handleCostChange(row.code, 'board', e.target.value)}
+                          placeholder="0"
+                          title={
+                            row.coreBoardInfo && row.coreBoardInfo.category !== 'none'
+                              ? `Cốt vật tư: ${row.coreBoardInfo.label} (${row.sizeKey}) - Tự động đồng bộ từ Bảng Giá Cốt Vật Tư: ${formatCurrency(row.board || 0)}`
+                              : 'Không dùng cốt ván'
+                          }
+                          className={`w-full px-2 py-1 bg-white border rounded-lg text-right font-mono text-xs focus:bg-amber-50/50 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-hidden ${
+                            row.isBoardAutoFilled
+                              ? 'border-teal-400 bg-teal-50/40 text-teal-950 font-bold'
+                              : row.board && row.board > 0
+                              ? 'border-slate-300 text-slate-900 font-semibold'
+                              : 'border-slate-200'
+                          }`}
+                        />
+                        {row.coreBoardInfo && row.coreBoardInfo.category !== 'none' ? (
+                          <div
+                            className="text-[9px] text-teal-800 font-bold mt-0.5 text-right flex items-center justify-end gap-0.5"
+                            title={`Đồng bộ từ Bảng giá cốt: ${row.coreBoardInfo.label}`}
+                          >
+                            <Sparkles className="w-2.5 h-2.5 text-teal-600 shrink-0" />
+                            <span>{row.boardDetails.label}</span>
+                          </div>
+                        ) : (
+                          <div className="text-[9px] text-slate-400 italic mt-0.5 text-right px-0.5">
+                            Không cốt
+                          </div>
+                        )}
+                      </td>
+
+                      {/* 4. Màng Ép */}
+                      <td className="py-1.5 px-1.5 text-center bg-slate-50/30">
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          value={row.film !== undefined && row.film > 0 ? formatNumber(row.film) : ''}
+                          onChange={(e) => handleCostChange(row.code, 'film', e.target.value)}
+                          placeholder="0"
+                          title={
+                            row.isFilmAutoFilled
+                              ? `Tự động tham chiếu màng ép [Khổ ${row.size}] x [Chất liệu ${row.filmMaterialLabel}]`
+                              : `Chi phí màng ép [Khổ ${row.size}] x [Chất liệu ${row.filmMaterialLabel}]`
+                          }
+                          className={`w-full px-2 py-1 bg-white border rounded-lg text-right font-mono text-xs focus:bg-amber-50/50 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-hidden ${
+                            row.isFilmAutoFilled
+                              ? 'border-emerald-400 bg-emerald-50/40 text-emerald-950 font-bold'
+                              : row.film && row.film > 0
+                              ? 'border-slate-300 text-slate-900 font-semibold'
+                              : 'border-slate-200'
+                          }`}
+                        />
+                        {row.isFilmAutoFilled ? (
+                          <div
+                            className="text-[9px] text-emerald-700 font-bold mt-0.5 text-right flex items-center justify-end gap-0.5"
+                            title={`Tự động tham chiếu theo [Khổ ${row.size}] x [Chất liệu ${row.filmMaterialLabel}]`}
+                          >
+                            <Sparkles className="w-2.5 h-2.5 text-emerald-600 shrink-0" />
+                            <span>{row.filmMaterialLabel} ({row.size})</span>
+                          </div>
+                        ) : (
+                          <div className="text-[9px] text-slate-500 font-medium mt-0.5 text-right px-0.5">
+                            {row.filmMaterialLabel} ({row.size})
+                          </div>
+                        )}
+                      </td>
+
+                      {/* 5. Khung / Viền */}
+                      <td className="py-1.5 px-1.5 text-center bg-slate-50/30">
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          value={row.frame !== undefined && row.frame > 0 ? formatNumber(row.frame) : ''}
+                          onChange={(e) => handleCostChange(row.code, 'frame', e.target.value)}
+                          placeholder="0"
+                          title={
+                            row.isFrameAutoFilled
+                              ? `Tự động điền theo nhóm khung ${row.frameCatLabel} (${row.size})`
+                              : `Chi phí khung / viền cho mã ${row.code}`
+                          }
+                          className={`w-full px-2 py-1 bg-white border rounded-lg text-right font-mono text-xs focus:bg-amber-50/50 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-hidden ${
+                            row.isFrameAutoFilled
+                              ? 'border-amber-400 bg-amber-50/40 text-amber-950 font-bold'
+                              : row.frame && row.frame > 0
+                              ? 'border-slate-300 text-slate-900 font-semibold'
+                              : 'border-slate-200'
+                          }`}
+                        />
+                        {row.isFrameAutoFilled ? (
+                          <div
+                            className="text-[9px] text-amber-800 font-bold mt-0.5 text-right flex items-center justify-end gap-0.5"
+                            title={`Tự động đồng nhất theo nhóm khung ${row.frameCatLabel}`}
+                          >
+                            <Sparkles className="w-2.5 h-2.5 text-amber-600 shrink-0" />
+                            <span>{row.frameCatLabel}</span>
+                          </div>
+                        ) : (
+                          <div className="text-[9px] text-slate-500 font-medium mt-0.5 text-right px-0.5">
+                            {row.frameCatLabel}
+                          </div>
+                        )}
+                      </td>
+
+                      {/* 6. Khác */}
+                      <td className="py-1.5 px-1.5 text-center bg-slate-50/30">
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          value={row.other !== undefined && row.other > 0 ? formatNumber(row.other) : ''}
+                          onChange={(e) => handleCostChange(row.code, 'other', e.target.value)}
+                          placeholder="0"
+                          title={
+                            row.isOtherAutoFilled
+                              ? `Tự động điền theo chuẩn chi phí khác khổ ${row.size}`
+                              : `Chi phí khác (dùng chung cho toàn bộ sản phẩm khổ ${row.size})`
+                          }
+                          className={`w-full px-2 py-1 bg-white border rounded-lg text-right font-mono text-xs focus:bg-amber-50/50 focus:border-amber-500 focus:ring-1 focus:ring-amber-500 outline-hidden ${
+                            row.isOtherAutoFilled
+                              ? 'border-emerald-400 bg-emerald-50/40 text-emerald-950 font-bold'
+                              : row.other && row.other > 0
+                              ? 'border-slate-300 text-slate-900 font-semibold'
+                              : 'border-slate-200'
+                          }`}
+                        />
+                        {row.isOtherAutoFilled ? (
+                          <div
+                            className="text-[9px] text-emerald-700 font-bold mt-0.5 text-right flex items-center justify-end gap-0.5"
+                            title={`Tự động lấy theo chuẩn chi phí khác khổ ${row.size}`}
+                          >
+                            <Sparkles className="w-2.5 h-2.5 text-emerald-600 shrink-0" />
+                            <span>Tự điền theo khổ</span>
+                          </div>
+                        ) : (
+                          <div className="text-[9px] text-slate-500 font-medium mt-0.5 text-right px-0.5">
+                            Khổ {row.size}
+                          </div>
+                        )}
+                      </td>
+
+                      {/* TỔNG GIÁ VỐN (Tự động tính) */}
+                      <td className="py-2.5 px-3 text-right font-mono font-bold text-slate-900 bg-amber-50/30 border-l border-slate-200 text-xs">
+                        {row.hasCostData ? (
+                          <span className="text-amber-950 font-black">
+                            {formatCurrency(row.totalCost)}
+                          </span>
+                        ) : (
+                          <span className="text-slate-400 italic text-[11px]">—</span>
+                        )}
+                      </td>
+
+                      {/* GIÁ BÁN SỈ / STUDIO */}
+                      <td className="py-1.5 px-2 text-right font-mono font-black text-indigo-900 bg-indigo-50/20 border-l border-slate-200 text-xs">
+                        <div className="flex items-center justify-end">
+                          <input
+                            type="text"
+                            inputMode="numeric"
+                            value={row.studioPrice > 0 ? formatNumber(row.studioPrice) : ''}
+                            onChange={(e) => handleCostChange(row.code, 'manualStudioPrice', e.target.value)}
+                            placeholder="Chưa cài"
+                            title="Giá Bán Sỉ / Studio (Tự động liên kết từ Bảng Giá SP, có thể sửa trực tiếp)"
+                            className="w-24 px-1.5 py-1 bg-white/70 hover:bg-white focus:bg-white border border-slate-200 focus:border-indigo-500 rounded-lg text-right font-mono text-xs font-black text-indigo-950 focus:ring-1 focus:ring-indigo-500 outline-hidden"
+                          />
+                        </div>
+                      </td>
+
+                      {/* LỢI NHUẬN GỘP ƯỚC TÍNH */}
+                      <td className="py-2.5 px-3 text-right font-mono font-black border-l border-slate-200 text-xs bg-emerald-50/20">
+                        {row.hasCostData && row.studioPrice > 0 ? (
+                          <span className={row.grossProfit >= 0 ? 'text-emerald-700' : 'text-rose-600'}>
+                            {row.grossProfit < 0 ? '-' : ''}{formatCurrency(Math.abs(row.grossProfit))}
+                          </span>
+                        ) : (
+                          <span className="text-slate-400 italic text-[11px]">—</span>
+                        )}
+                      </td>
+
+                      {/* TỶ SUẤT LNG / GIÁ BÁN (%) */}
+                      <td className="py-2.5 px-3 text-center border-l border-slate-200">
+                        {row.hasCostData && row.studioPrice > 0 ? (
+                          <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-mono ${getMarginBadgeClass(row.marginOnPrice, true)}`}>
+                            {row.marginOnPrice >= 0 ? (
+                              <ArrowUpRight className="w-3 h-3" />
+                            ) : (
+                              <ArrowDownRight className="w-3 h-3" />
+                            )}
+                            <span>{row.marginOnPrice.toFixed(1)}%</span>
+                          </span>
+                        ) : (
+                          <span className="text-slate-400 text-[11px] italic">—</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {/* TABLE FOOTER / GUIDELINES */}
+          <div className="p-4 bg-slate-50 border-t border-slate-200 text-xs text-slate-600 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <Info className="w-4 h-4 text-amber-600 shrink-0" />
+              <span>
+                <strong>Công thức:</strong> Tổng Giá Vốn = (Mực + Giấy + Ván/Fomex + Màng Ép + Khung/Viền + Khác). Lợi Nhuận Gộp = (Giá Studio - Giá Vốn). Tỷ Suất / Giá Bán = (LNG / Giá Studio) * 100%.
+              </span>
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0 text-[11px] text-slate-500 font-medium">
+              <span>💾 Dữ liệu tự động đồng bộ thời gian thực lên Firebase Cloud Firestore</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL THÊM / SỬA SẢN PHẨM NHẬP THÀNH PHẨM */}
+      {isAddModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden border border-slate-200">
+            <div className="px-6 py-4 bg-slate-900 text-white flex items-center justify-between">
+              <h3 className="font-extrabold text-sm flex items-center gap-2 text-amber-300">
+                <Sparkles className="w-4 h-4 text-amber-400" />
+                {editingItemCode ? 'SỬA SẢN PHẨM NHẬP THÀNH PHẨM' : 'THÊM SẢN PHẨM NHẬP THÀNH PHẨM MỚI'}
+              </h3>
+              <button
+                type="button"
+                onClick={() => setIsAddModalOpen(false)}
+                className="text-slate-400 hover:text-white p-1 rounded-lg transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveProductForm} className="p-6 space-y-4 text-xs">
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">
+                  Mã Sản Phẩm <span className="text-rose-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={productForm.code}
+                  onChange={(e) => setProductForm({ ...productForm, code: e.target.value })}
+                  placeholder="VD: ABMP20x30ST hoặc ALBUM_VIP_3040"
+                  disabled={!!editingItemCode}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg font-mono font-bold text-slate-900 focus:ring-2 focus:ring-amber-500 outline-hidden disabled:bg-slate-100"
+                />
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">
+                  Tên Sản Phẩm <span className="text-rose-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={productForm.name}
+                  onChange={(e) => setProductForm({ ...productForm, name: e.target.value })}
+                  placeholder="VD: Album Mở Phẳng 20x30 10 Tờ"
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg font-bold text-slate-900 focus:ring-2 focus:ring-amber-500 outline-hidden"
+                />
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">
+                  Kích Thước / Khổ
+                </label>
+                <input
+                  type="text"
+                  value={productForm.size}
+                  onChange={(e) => setProductForm({ ...productForm, size: e.target.value })}
+                  placeholder="VD: 20x30"
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-slate-900 focus:ring-2 focus:ring-amber-500 outline-hidden"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 pt-2">
+                <div>
+                  <label className="block font-bold text-amber-900 mb-1">
+                    Giá Vốn Nhập (VNĐ)
+                  </label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={productForm.importCost ? formatNumber(parseFloat(productForm.importCost.replace(/\D/g, '')) || 0) : ''}
+                    onChange={(e) => {
+                      const val = e.target.value.replace(/\D/g, '');
+                      setProductForm({ ...productForm, importCost: val });
+                    }}
+                    placeholder="VD: 250,000"
+                    className="w-full px-3 py-2 border border-amber-300 rounded-lg font-mono font-bold text-amber-950 text-right focus:ring-2 focus:ring-amber-500 outline-hidden"
+                  />
+                </div>
+
+                <div>
+                  <label className="block font-bold text-indigo-900 mb-1">
+                    Giá Bán Sỉ/Studio (VNĐ)
+                  </label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={productForm.studioPrice ? formatNumber(parseFloat(productForm.studioPrice.replace(/\D/g, '')) || 0) : ''}
+                    onChange={(e) => {
+                      const val = e.target.value.replace(/\D/g, '');
+                      setProductForm({ ...productForm, studioPrice: val });
+                    }}
+                    placeholder="VD: 390,000"
+                    className="w-full px-3 py-2 border border-indigo-300 rounded-lg font-mono font-bold text-indigo-950 text-right focus:ring-2 focus:ring-indigo-500 outline-hidden"
+                  />
+                </div>
+              </div>
+
+              <div className="pt-4 flex items-center justify-end gap-2 border-t border-slate-200">
+                <button
+                  type="button"
+                  onClick={() => setIsAddModalOpen(false)}
+                  className="px-4 py-2 border border-slate-300 hover:bg-slate-100 text-slate-700 font-bold rounded-xl transition-colors cursor-pointer"
+                >
+                  Hủy
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl shadow-md transition-all cursor-pointer flex items-center gap-1.5"
+                >
+                  <Save className="w-4 h-4" />
+                  <span>Lưu Sản Phẩm</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
