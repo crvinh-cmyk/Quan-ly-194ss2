@@ -613,6 +613,283 @@ export function getFrameCategoryLabel(cat: FrameCategory): string {
   }
 }
 
+/**
+ * Tìm kiếm hoặc suy luận thông tin sản phẩm từ danh mục sản phẩm.
+ */
+export function resolveProductForCode(code: string, products: Product[] = []) {
+  const cleanCode = code.toUpperCase().trim();
+  // 1. Try exact match in GIÁ STUDIO
+  let matched = products.find(
+    p => p.code.toUpperCase().trim() === cleanCode && p.category === 'GIÁ STUDIO'
+  );
+  // 2. Try exact match in any category
+  if (!matched) {
+    matched = products.find(p => p.code.toUpperCase().trim() === cleanCode);
+  }
+  // 3. Try flexible match (ignore *, x, X, _)
+  if (!matched) {
+    const normInput = cleanCode.replace(/[*xX_\-]/g, '');
+    matched = products.find(p => p.code.toUpperCase().replace(/[*xX_\-]/g, '') === normInput);
+  }
+
+  // 4. Try base product without framing suffixes (K456, K45, K10, K11, TT1, TT2, etc.)
+  let baseMatched: Product | undefined = undefined;
+  if (!matched) {
+    const stripped = cleanCode.replace(/(K456|K45|K10|K11|TT1|TT2)$/i, '');
+    baseMatched = products.find(p => {
+      const pNorm = p.code.toUpperCase().replace(/[*xX_\-]/g, '');
+      const sNorm = stripped.replace(/[*xX_\-]/g, '');
+      return (pNorm === sNorm || p.code.toUpperCase() === stripped) && p.category === 'GIÁ STUDIO';
+    });
+
+    if (!baseMatched) {
+      // Also try HDST prefix for 4KST or HDPROST
+      const hdCode = stripped.replace(/^(4KST|HDPROST)/, 'HDST');
+      baseMatched = products.find(p => {
+        const pNorm = p.code.toUpperCase().replace(/[*xX_\-]/g, '');
+        const sNorm = hdCode.replace(/[*xX_\-]/g, '');
+        return (pNorm === sNorm || p.code.toUpperCase() === hdCode) && p.category === 'GIÁ STUDIO';
+      });
+    }
+  }
+
+  if (matched) {
+    return {
+      matchedProduct: matched,
+      name: matched.name,
+      size: matched.size,
+      fullTitle: `${matched.name} (${matched.size})`,
+      studioPrice: matched.price
+    };
+  }
+
+  if (baseMatched) {
+    return {
+      matchedProduct: baseMatched,
+      name: baseMatched.name,
+      size: baseMatched.size,
+      fullTitle: `${baseMatched.name} (${baseMatched.size})`,
+      studioPrice: baseMatched.price
+    };
+  }
+
+  // Infer name and size if not found in catalog
+  let size = '';
+  const sizeMatch = cleanCode.match(/(\d{2,3})[*xX](\d{2,3})/);
+  if (sizeMatch) {
+    size = `${sizeMatch[1]}*${sizeMatch[2]}`;
+  } else if (cleanCode.includes('6096') || cleanCode.includes('6090')) {
+    size = '60*90';
+  }
+
+  let baseName = 'Ảnh Hoàn Thiện';
+  if (cleanCode.startsWith('LVST')) baseName = 'Ảnh Lụa Viền Bo Viền';
+  else if (cleanCode.startsWith('MKST')) {
+    baseName = cleanCode.includes('K456') ? 'Ảnh Mika Khung K456'
+      : cleanCode.includes('K11') ? 'Ảnh Mika Khung K11'
+      : cleanCode.includes('TT1') ? 'Ảnh Mika Khung Titan 1'
+      : cleanCode.includes('TT2') ? 'Ảnh Mika Khung Titan 2'
+      : 'Ảnh Mika Phổ Thông Bo Viền';
+  } else if (cleanCode.startsWith('HDST')) {
+    baseName = cleanCode.includes('K456') ? 'Ảnh HD Gương Khung K456'
+      : cleanCode.includes('K10') ? 'Ảnh HD Gương Khung K10'
+      : cleanCode.includes('K11') ? 'Ảnh HD Gương Khung K11'
+      : cleanCode.includes('TT1') ? 'Ảnh HD Gương Khung Titan 1'
+      : cleanCode.includes('TT2') ? 'Ảnh HD Gương Khung Titan 2'
+      : 'Ảnh HD Gương Siêu Bóng Bo Viền';
+  } else if (cleanCode.startsWith('4KST')) {
+    baseName = cleanCode.includes('K456') ? 'Ảnh 4K Siêu Nét Khung K456'
+      : cleanCode.includes('TT1') ? 'Ảnh 4K Siêu Nét Khung Titan 1'
+      : cleanCode.includes('TT2') ? 'Ảnh 4K Siêu Nét Khung Titan 2'
+      : 'Ảnh 4K Siêu Nét Bo Viền';
+  } else if (cleanCode.startsWith('HDPROST')) {
+    baseName = cleanCode.includes('K456') || cleanCode.includes('K45') ? 'Ảnh HD Pro Siêu Nét Khung K456'
+      : cleanCode.includes('TT2') ? 'Ảnh HD Pro Siêu Nét Khung Titan 2'
+      : 'Ảnh HD Pro Siêu Nét';
+  }
+
+  return {
+    matchedProduct: undefined,
+    name: baseName,
+    size: size || 'Tiêu chuẩn',
+    fullTitle: `${baseName} ${size ? `(${size})` : ''}`.trim(),
+    studioPrice: 0
+  };
+}
+
+/**
+ * Tính toán đơn giá vốn (Tổng giá vốn 1 sản phẩm) cho tất cả các mã sản phẩm
+ * dựa trên Bảng giá sản phẩm, costMap và Bảng giá cốt vật tư.
+ */
+export function computeProductCostLookupMap(
+  costMap: ProductCostMap,
+  boardCorePrices: BoardCorePriceMap,
+  products: Product[] = []
+): Record<string, number> {
+  const result: Record<string, number> = {};
+
+  const codeSet = new Set<string>();
+  PDF_STATS_PRODUCT_CODES.forEach(c => codeSet.add(c));
+  products.forEach(p => {
+    if (p.code) codeSet.add(p.code);
+  });
+  Object.keys(costMap || {}).forEach(c => {
+    if (c) codeSet.add(c);
+  });
+
+  const allCodes = Array.from(codeSet);
+
+  const codeMetaMap: Record<string, {
+    sizeKey: string;
+    frameCat: FrameCategory;
+    is4060: boolean;
+    filmMaterial: FilmMaterialInfo;
+    prodInfo: ReturnType<typeof resolveProductForCode>;
+  }> = {};
+
+  allCodes.forEach(code => {
+    const prodInfo = resolveProductForCode(code, products);
+    const sizeKey = normalizePhotoSizeKey(prodInfo.size, code, prodInfo.name);
+    const frameCat = detectFrameCategory(code, prodInfo.name);
+    const is4060 = isSize4060(prodInfo.size, code, prodInfo.name);
+    const filmMaterial = detectFilmMaterial(code, prodInfo.name);
+
+    codeMetaMap[code] = {
+      sizeKey,
+      frameCat,
+      is4060,
+      filmMaterial,
+      prodInfo
+    };
+  });
+
+  const inkMap: Record<string, number> = {};
+  const paperMap: Record<string, number> = {};
+  const frameMap: Record<string, number> = {};
+  const otherMap: Record<string, number> = {};
+  const filmMap: Record<string, number> = {};
+
+  for (const [code, cost] of Object.entries(costMap || {})) {
+    if (!cost) continue;
+    const meta = codeMetaMap[code] || {
+      sizeKey: normalizePhotoSizeKey(undefined, code),
+      frameCat: detectFrameCategory(code),
+      is4060: isSize4060(undefined, code),
+      filmMaterial: detectFilmMaterial(code),
+      prodInfo: resolveProductForCode(code, products)
+    };
+
+    if (cost.ink !== undefined && cost.ink > 0 && inkMap[meta.sizeKey] === undefined) {
+      inkMap[meta.sizeKey] = cost.ink;
+    }
+    if (cost.paper !== undefined && cost.paper > 0 && paperMap[meta.sizeKey] === undefined) {
+      paperMap[meta.sizeKey] = cost.paper;
+    }
+    if (meta.frameCat !== 'none' && cost.frame !== undefined && cost.frame > 0) {
+      const groupKey = `${meta.sizeKey}_${meta.frameCat}`;
+      if (frameMap[groupKey] === undefined) frameMap[groupKey] = cost.frame;
+    }
+    if (cost.film !== undefined && cost.film > 0 && meta.filmMaterial && meta.filmMaterial.type !== 'unknown') {
+      const filmKey = `${meta.sizeKey}_${meta.filmMaterial.type}`;
+      if (filmMap[filmKey] === undefined) filmMap[filmKey] = cost.film;
+    }
+    if (cost.other !== undefined && cost.other > 0) {
+      if (otherMap[meta.sizeKey] === undefined) otherMap[meta.sizeKey] = cost.other;
+    }
+  }
+
+  allCodes.forEach(code => {
+    const meta = codeMetaMap[code];
+    const sizeKey = meta?.sizeKey;
+    if (sizeKey) {
+      if (inkMap[sizeKey] === undefined || paperMap[sizeKey] === undefined) {
+        const defaults = getDefaultInkPaperForSize(sizeKey);
+        if (inkMap[sizeKey] === undefined) inkMap[sizeKey] = defaults.ink;
+        if (paperMap[sizeKey] === undefined) paperMap[sizeKey] = defaults.paper;
+      }
+    }
+  });
+
+  allCodes.forEach(code => {
+    const meta = codeMetaMap[code];
+    if (!meta) return;
+    const sizeKey = meta.sizeKey;
+    const prodInfo = meta.prodInfo;
+    const userCosts = (costMap || {})[code] || {};
+
+    const refInk = inkMap[sizeKey];
+    const resolvedInk = (userCosts.ink !== undefined && userCosts.ink > 0) ? userCosts.ink : (refInk || 0);
+
+    const refPaper = paperMap[sizeKey];
+    const resolvedPaper = (userCosts.paper !== undefined && userCosts.paper > 0) ? userCosts.paper : (refPaper || 0);
+
+    const coreBoardInfo = detectProductCoreBoardCategory(code, prodInfo.matchedProduct, prodInfo.name, sizeKey);
+    let standardBoardPrice = 0;
+    if (coreBoardInfo.category !== 'none') {
+      if (coreBoardInfo.category === 'mdf_9li_hq_1521') {
+        standardBoardPrice = boardCorePrices['1521 9li HQ']?.mdf9li || DEFAULT_BOARD_CORE_PRICES['1521 9li HQ']?.mdf9li || boardCorePrices['15x21']?.mdf9li || 15000;
+      } else if (coreBoardInfo.category === 'mdf_9li_hq_2030') {
+        standardBoardPrice = boardCorePrices['2030 9li HQ']?.mdf9li || DEFAULT_BOARD_CORE_PRICES['2030 9li HQ']?.mdf9li || boardCorePrices['20x30']?.mdf9li || 20000;
+      } else {
+        const boardRow = boardCorePrices[sizeKey] || DEFAULT_BOARD_CORE_PRICES[sizeKey];
+        if (boardRow) {
+          if (coreBoardInfo.category === 'mdf_9li') standardBoardPrice = boardRow.mdf9li || 0;
+          else if (coreBoardInfo.category === 'mdf_12li') standardBoardPrice = boardRow.mdf12li || 0;
+          else if (coreBoardInfo.category === 'fomex_9li') standardBoardPrice = boardRow.fomex9li || 0;
+        }
+      }
+    }
+
+    let resolvedBoard = 0;
+    if (coreBoardInfo.category === 'none') {
+      resolvedBoard = 0;
+    } else if (standardBoardPrice > 0) {
+      resolvedBoard = standardBoardPrice;
+    } else if (userCosts.board !== undefined && userCosts.board > 0) {
+      resolvedBoard = userCosts.board;
+    }
+
+    const filmMaterial = meta.filmMaterial;
+    const filmGroupKey = filmMaterial.type !== 'unknown' ? `${sizeKey}_${filmMaterial.type}` : '';
+    const refFilm = filmGroupKey ? filmMap[filmGroupKey] : undefined;
+    let resolvedFilm = 0;
+    if (userCosts.film !== undefined && userCosts.film > 0) {
+      resolvedFilm = userCosts.film;
+    } else if (filmMaterial.type !== 'unknown' && refFilm !== undefined && refFilm > 0) {
+      resolvedFilm = refFilm;
+    }
+
+    const frameGroupKey = meta.frameCat !== 'none' ? `${sizeKey}_${meta.frameCat}` : '';
+    const refFrame = frameGroupKey ? frameMap[frameGroupKey] : undefined;
+    let resolvedFrame = 0;
+    if (userCosts.frame !== undefined && userCosts.frame > 0) {
+      resolvedFrame = userCosts.frame;
+    } else if (meta.frameCat !== 'none' && refFrame !== undefined && refFrame > 0) {
+      resolvedFrame = refFrame;
+    }
+
+    const refOther = otherMap[sizeKey];
+    let resolvedOther = 0;
+    if (userCosts.other !== undefined && userCosts.other > 0) {
+      resolvedOther = userCosts.other;
+    } else if (refOther !== undefined && refOther > 0) {
+      resolvedOther = refOther;
+    }
+
+    const totalCost =
+      Number(resolvedInk || 0) +
+      Number(resolvedPaper || 0) +
+      Number(resolvedBoard || 0) +
+      Number(resolvedFilm || 0) +
+      Number(resolvedFrame || 0) +
+      Number(resolvedOther || 0);
+
+    result[code.toUpperCase()] = totalCost;
+  });
+
+  return result;
+}
+
 interface ProductCostAnalyticsTableProps {
   products: Product[];
   currentUserEmail?: string | null;
@@ -662,106 +939,7 @@ export const ProductCostAnalyticsTable: React.FC<ProductCostAnalyticsTableProps>
   };
 
   // Helper to find or infer product info from the catalog
-  const resolveProductForCode = (code: string) => {
-    const cleanCode = code.toUpperCase().trim();
-    // 1. Try exact match in GIÁ STUDIO
-    let matched = products.find(
-      p => p.code.toUpperCase().trim() === cleanCode && p.category === 'GIÁ STUDIO'
-    );
-    // 2. Try exact match in any category
-    if (!matched) {
-      matched = products.find(p => p.code.toUpperCase().trim() === cleanCode);
-    }
-    // 3. Try flexible match (ignore *, x, X, _)
-    if (!matched) {
-      const normInput = cleanCode.replace(/[*xX_\-]/g, '');
-      matched = products.find(p => p.code.toUpperCase().replace(/[*xX_\-]/g, '') === normInput);
-    }
-
-    // 4. Try base product without framing suffixes (K456, K45, K10, K11, TT1, TT2, etc.)
-    let baseMatched: Product | undefined = undefined;
-    if (!matched) {
-      const stripped = cleanCode.replace(/(K456|K45|K10|K11|TT1|TT2)$/i, '');
-      baseMatched = products.find(p => {
-        const pNorm = p.code.toUpperCase().replace(/[*xX_\-]/g, '');
-        const sNorm = stripped.replace(/[*xX_\-]/g, '');
-        return (pNorm === sNorm || p.code.toUpperCase() === stripped) && p.category === 'GIÁ STUDIO';
-      });
-
-      if (!baseMatched) {
-        // Also try HDST prefix for 4KST or HDPROST
-        const hdCode = stripped.replace(/^(4KST|HDPROST)/, 'HDST');
-        baseMatched = products.find(p => {
-          const pNorm = p.code.toUpperCase().replace(/[*xX_\-]/g, '');
-          const sNorm = hdCode.replace(/[*xX_\-]/g, '');
-          return (pNorm === sNorm || p.code.toUpperCase() === hdCode) && p.category === 'GIÁ STUDIO';
-        });
-      }
-    }
-
-    if (matched) {
-      return {
-        matchedProduct: matched,
-        name: matched.name,
-        size: matched.size,
-        fullTitle: `${matched.name} (${matched.size})`,
-        studioPrice: matched.price
-      };
-    }
-
-    if (baseMatched) {
-      return {
-        matchedProduct: baseMatched,
-        name: baseMatched.name,
-        size: baseMatched.size,
-        fullTitle: `${baseMatched.name} (${baseMatched.size})`,
-        studioPrice: baseMatched.price
-      };
-    }
-
-    // Infer name and size if not found in catalog
-    let size = '';
-    const sizeMatch = cleanCode.match(/(\d{2,3})[*xX](\d{2,3})/);
-    if (sizeMatch) {
-      size = `${sizeMatch[1]}*${sizeMatch[2]}`;
-    } else if (cleanCode.includes('6096') || cleanCode.includes('6090')) {
-      size = '60*90';
-    }
-
-    let baseName = 'Ảnh Hoàn Thiện';
-    if (cleanCode.startsWith('LVST')) baseName = 'Ảnh Lụa Viền Bo Viền';
-    else if (cleanCode.startsWith('MKST')) {
-      baseName = cleanCode.includes('K456') ? 'Ảnh Mika Khung K456'
-        : cleanCode.includes('K11') ? 'Ảnh Mika Khung K11'
-        : cleanCode.includes('TT1') ? 'Ảnh Mika Khung Titan 1'
-        : cleanCode.includes('TT2') ? 'Ảnh Mika Khung Titan 2'
-        : 'Ảnh Mika Phổ Thông Bo Viền';
-    } else if (cleanCode.startsWith('HDST')) {
-      baseName = cleanCode.includes('K456') ? 'Ảnh HD Gương Khung K456'
-        : cleanCode.includes('K10') ? 'Ảnh HD Gương Khung K10'
-        : cleanCode.includes('K11') ? 'Ảnh HD Gương Khung K11'
-        : cleanCode.includes('TT1') ? 'Ảnh HD Gương Khung Titan 1'
-        : cleanCode.includes('TT2') ? 'Ảnh HD Gương Khung Titan 2'
-        : 'Ảnh HD Gương Siêu Bóng Bo Viền';
-    } else if (cleanCode.startsWith('4KST')) {
-      baseName = cleanCode.includes('K456') ? 'Ảnh 4K Siêu Nét Khung K456'
-        : cleanCode.includes('TT1') ? 'Ảnh 4K Siêu Nét Khung Titan 1'
-        : cleanCode.includes('TT2') ? 'Ảnh 4K Siêu Nét Khung Titan 2'
-        : 'Ảnh 4K Siêu Nét Bo Viền';
-    } else if (cleanCode.startsWith('HDPROST')) {
-      baseName = cleanCode.includes('K456') || cleanCode.includes('K45') ? 'Ảnh HD Pro Siêu Nét Khung K456'
-        : cleanCode.includes('TT2') ? 'Ảnh HD Pro Siêu Nét Khung Titan 2'
-        : 'Ảnh HD Pro Siêu Nét';
-    }
-
-    return {
-      matchedProduct: undefined,
-      name: baseName,
-      size: size || 'Tiêu chuẩn',
-      fullTitle: `${baseName} ${size ? `(${size})` : ''}`.trim(),
-      studioPrice: 0
-    };
-  };
+  const resolveProduct = (code: string) => resolveProductForCode(code, products);
 
   // Danh sách toàn bộ mã cần thống kê: 63 mã PDF gốc + các mã GIÁ STUDIO còn lại từ Bảng giá
   const allCodeItems = useMemo(() => {
@@ -819,7 +997,7 @@ export const ProductCostAnalyticsTable: React.FC<ProductCostAnalyticsTableProps>
     }> = {};
 
     allCodes.forEach(code => {
-      const prodInfo = resolveProductForCode(code);
+      const prodInfo = resolveProductForCode(code, products);
       map[code] = {
         sizeKey: normalizePhotoSizeKey(prodInfo.size, code, prodInfo.name),
         frameCat: detectFrameCategory(code, prodInfo.name),
@@ -858,7 +1036,7 @@ export const ProductCostAnalyticsTable: React.FC<ProductCostAnalyticsTableProps>
         frameCat: detectFrameCategory(code),
         is4060: isSize4060(undefined, code),
         filmMaterial: detectFilmMaterial(code),
-        prodInfo: resolveProductForCode(code)
+        prodInfo: resolveProductForCode(code, products)
       };
 
       // Tham chiếu Mực & Giấy theo kích thước (áp dụng cho tất cả các kích thước)
@@ -925,7 +1103,7 @@ export const ProductCostAnalyticsTable: React.FC<ProductCostAnalyticsTableProps>
     // Tạo chi tiết cho từng dòng và sắp xếp chuẩn quy tắc
     const mappedRows = allCodeItems.map(({ code }) => {
       const meta = codeMetaMap[code];
-      const prodInfo = meta?.prodInfo || resolveProductForCode(code);
+      const prodInfo = meta?.prodInfo || resolveProductForCode(code, products);
       const sizeKey = meta?.sizeKey || normalizePhotoSizeKey(prodInfo.size, code, prodInfo.name);
       const frameCat = meta?.frameCat || detectFrameCategory(code, prodInfo.name);
       const is4060 = meta?.is4060 || isSize4060(prodInfo.size, code, prodInfo.name);
@@ -1204,7 +1382,7 @@ export const ProductCostAnalyticsTable: React.FC<ProductCostAnalyticsTableProps>
         sizeKey: normalizePhotoSizeKey(undefined, code),
         frameCat: detectFrameCategory(code),
         is4060: isSize4060(undefined, code),
-        prodInfo: resolveProductForCode(code)
+        prodInfo: resolveProductForCode(code, products)
       };
 
       // 1 & 2. NGUYÊN TẮC GIÁ KHUNG / VIỀN (ÁP DỤNG CHO CẢ 7 NHÓM KHUNG/VIỀN):

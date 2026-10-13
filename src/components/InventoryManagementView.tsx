@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { Material, MaterialCategory, StockImportReceipt, StockImportItem, Order, Product, InkImportRecord } from '../types';
+import { Material, MaterialCategory, StockImportReceipt, StockImportItem, Order, OrderItem, MaterialDeduction, Product, InkImportRecord } from '../types';
 import { formatCurrency, formatNumber, formatDateVN } from '../utils/formatters';
 import { getMaterialUsageSummary, calculateOrderBOM, createMaterialDeductionRecords } from '../utils/materialBOM';
 import {

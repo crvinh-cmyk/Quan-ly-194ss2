@@ -1,17 +1,21 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { Order, Product, StockImportReceipt, Customer } from '../types';
+import { Order, OrderItem, MaterialDeduction, Product, StockImportReceipt, Customer, ProductCostMap, BoardCorePriceMap } from '../types';
 import { formatCurrency } from '../utils/formatters';
 import { isPartnerMode, getDisplayPrice } from '../utils/partnerConfig';
 import {
   Calendar, DollarSign, Award, BarChart3, RotateCcw,
   Sparkles, CheckCircle2, Flame, ArrowDown, TrendingUp, Coins,
-  Table2, ShieldAlert
+  Table2, ShieldAlert, Layers, Percent, TrendingDown
 } from 'lucide-react';
-import { ProductCostAnalyticsTable } from './ProductCostAnalyticsTable';
+import { ProductCostAnalyticsTable, computeProductCostLookupMap } from './ProductCostAnalyticsTable';
 import {
   subscribeRevenueDeductions,
   saveRevenueDeductionsToFirestore,
-  getLocalRevenueDeductions
+  getLocalRevenueDeductions,
+  subscribeProductCosts,
+  getLocalProductCosts,
+  subscribeBoardCorePrices,
+  getLocalBoardCorePrices
 } from '../services/firestoreService';
 
 interface AnalyticsViewProps {
@@ -55,6 +59,41 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
       if (typeof unsub === 'function') unsub();
     };
   }, []);
+
+  // Dữ liệu đơn giá vốn định mức sản phẩm từ "Bảng Thống Kê Định Mức Giá Vốn" & "Bảng Giá Cốt Vật Tư"
+  const [costMap, setCostMap] = useState<ProductCostMap>(() => getLocalProductCosts());
+  const [boardCorePrices, setBoardCorePrices] = useState<BoardCorePriceMap>(() => getLocalBoardCorePrices());
+
+  useEffect(() => {
+    const unsubCosts = subscribeProductCosts((data) => setCostMap(data || {}));
+    const unsubCore = subscribeBoardCorePrices((data) => setBoardCorePrices(data || {}));
+    return () => {
+      if (typeof unsubCosts === 'function') unsubCosts();
+      if (typeof unsubCore === 'function') unsubCore();
+    };
+  }, []);
+
+  // Map đơn giá vốn định mức cho tất cả các mã sản phẩm
+  const productCostLookup = useMemo(() => {
+    return computeProductCostLookupMap(costMap, boardCorePrices, products);
+  }, [costMap, boardCorePrices, products]);
+
+  // Tính chi phí nguyên vật liệu định mức cho 1 dòng sản phẩm bán ra
+  const getItemMaterialCost = (it: OrderItem): number => {
+    const codeKey = (it.productCode || '').trim().toUpperCase();
+    let unitCost = productCostLookup[codeKey];
+
+    if (unitCost === undefined) {
+      const matched = products.find(p => p.code.toUpperCase() === codeKey);
+      if (matched && productCostLookup[matched.code.toUpperCase()] !== undefined) {
+        unitCost = productCostLookup[matched.code.toUpperCase()];
+      } else {
+        unitCost = 0;
+      }
+    }
+
+    return (it.quantity || 0) * (unitCost || 0);
+  };
 
   // Xử lý thay đổi số tiền khấu trừ doanh thu cho một tháng cụ thể
   const handleDeductionChange = (month: number, rawVal: number) => {
@@ -139,6 +178,8 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
         revenue: 0,
         deduction,
         netRevenue: 0,
+        materialCost: 0,
+        grossProfit: 0,
         ordersCount: 0
       };
     });
@@ -171,6 +212,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
             if (mIdx >= 0 && mIdx < 12) {
               const itAmt = (it.amount !== undefined ? it.amount : (it.quantity * (it.price || 0))) || 0;
               months[mIdx].revenue += Math.round(itAmt * ratio);
+              months[mIdx].materialCost += getItemMaterialCost(it);
               if (!countedMonthsForOrder.has(mIdx)) {
                 months[mIdx].ordersCount += 1;
                 countedMonthsForOrder.add(mIdx);
@@ -181,13 +223,14 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
       }
     });
 
-    // Compute net revenue (Doanh thu thuần = Doanh thu bán ảnh - Khấu trừ)
+    // Compute net revenue & gross profit
     months.forEach(m => {
       m.netRevenue = Math.max(0, m.revenue - m.deduction);
+      m.grossProfit = m.netRevenue - m.materialCost;
     });
 
     return months;
-  }, [orders, selectedYear, revenueDeductions]);
+  }, [orders, selectedYear, revenueDeductions, productCostLookup, products]);
 
   // Tổng số liệu cả năm
   const totalYearGrossOrdersRevenue = useMemo(() => {
@@ -201,6 +244,15 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
   const totalYearNetOrdersRevenue = useMemo(() => {
     return monthlyData.reduce((sum, m) => sum + m.netRevenue, 0);
   }, [monthlyData]);
+
+  const totalYearMaterialCost = useMemo(() => {
+    return monthlyData.reduce((sum, m) => sum + m.materialCost, 0);
+  }, [monthlyData]);
+
+  const totalYearGrossProfit = useMemo(() => {
+    return totalYearNetOrdersRevenue - totalYearMaterialCost;
+  }, [totalYearNetOrdersRevenue, totalYearMaterialCost]);
+
 
   // Tổng doanh thu gộp (Gross Revenue)
   const totalGrossRevenue = useMemo(() => {
@@ -255,8 +307,9 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
       const dayDate = new Date(selectedYear, dailyMonth - 1, dayNum);
       const dayName = dayNames[dayDate.getDay()];
 
-      // Find orders and revenue on this day based on item dates
+      // Find orders and revenue/material cost on this day based on item dates
       let dayRevenue = 0;
+      let dayMaterialCost = 0;
       const dayOrdersSet = new Set<string>();
       const dayOrders: Order[] = [];
 
@@ -282,6 +335,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
             if (itDate === dateStr) {
               const itAmt = (it.amount !== undefined ? it.amount : (it.quantity * (it.price || 0))) || 0;
               dayRevenue += Math.round(itAmt * ratio);
+              dayMaterialCost += getItemMaterialCost(it);
               hasItemOnThisDay = true;
             }
           });
@@ -292,6 +346,8 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
         }
       });
 
+      const dayGrossProfit = dayRevenue - dayMaterialCost;
+
       return {
         day: dayNum,
         dateStr,
@@ -300,11 +356,16 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
         isToday: dateStr === currentRealDayStr,
         ordersCount: dayOrders.length,
         orders: dayOrders,
-        revenue: dayRevenue
+        revenue: dayRevenue,
+        materialCost: dayMaterialCost,
+        grossProfit: dayGrossProfit
       };
     });
 
     const totalMonthRevenue = days.reduce((sum, d) => sum + d.revenue, 0);
+    const totalMonthMaterialCost = days.reduce((sum, d) => sum + d.materialCost, 0);
+    const totalMonthGrossProfit = totalMonthRevenue - totalMonthMaterialCost;
+    const monthMargin = totalMonthRevenue > 0 ? Math.round((totalMonthGrossProfit / totalMonthRevenue) * 1000) / 10 : 0;
     const totalMonthOrders = days.reduce((sum, d) => sum + d.ordersCount, 0);
 
     const activeDays = days.filter(d => d.revenue > 0);
@@ -321,6 +382,9 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
       days,
       daysCount,
       totalMonthRevenue,
+      totalMonthMaterialCost,
+      totalMonthGrossProfit,
+      monthMargin,
       totalMonthOrders,
       activeDaysCount: activeDays.length,
       maxDay,
@@ -330,7 +394,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
       avgDailyRevenue,
       avgPerActiveDay
     };
-  }, [orders, selectedYear, dailyMonth, currentRealDayStr]);
+  }, [orders, selectedYear, dailyMonth, currentRealDayStr, productCostLookup, products]);
 
   const handleConfirmReset = () => {
     if (onResetYearData) {
@@ -632,9 +696,9 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
               <thead>
                 <tr className="bg-slate-100 text-slate-700 font-extrabold border-b border-slate-200">
                   <th className="py-3 px-3 w-28">Tháng</th>
-                  <th className="py-3 px-2 w-24 text-center">Số Đơn</th>
-                  <th className="py-3 px-3 w-40 text-right text-sm">Doanh Thu Bán Ảnh (VNĐ)</th>
-                  <th className="py-3 px-3 w-44 text-right bg-rose-50/70 text-rose-900 border-l border-rose-200" title="Khoản trừ sau giảm giá, nợ không đòi được, hủy đơn hoặc lý do không thực hiện được (Nhập thủ công)">
+                  <th className="py-3 px-2 w-20 text-center">Số Đơn</th>
+                  <th className="py-3 px-3 w-36 text-right text-sm">Doanh Thu Bán Ảnh (VNĐ)</th>
+                  <th className="py-3 px-3 w-40 text-right bg-rose-50/70 text-rose-900 border-l border-rose-200" title="Khoản trừ sau giảm giá, nợ không đòi được, hủy đơn hoặc lý do không thực hiện được (Nhập thủ công)">
                     <div className="flex flex-col items-end">
                       <div className="flex items-center gap-1 font-black text-xs text-rose-800">
                         <ShieldAlert className="w-3.5 h-3.5 text-rose-600" />
@@ -643,10 +707,22 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
                       <span className="text-[10px] text-rose-600 font-normal mt-0.5">(Nhập thủ công)</span>
                     </div>
                   </th>
-                  <th className="py-3 px-3 w-44 text-right bg-emerald-50/80 text-emerald-950 border-l border-emerald-200 font-black text-sm" title="Doanh Thu Thuần = Doanh Thu Bán Ảnh - Khấu Trừ Doanh Thu">
+                  <th className="py-3 px-3 w-40 text-right bg-emerald-50/80 text-emerald-950 border-l border-emerald-200 font-black text-sm" title="Doanh Thu Thuần = Doanh Thu Bán Ảnh - Khấu Trừ Doanh Thu">
                     <div className="flex flex-col items-end">
                       <span className="text-emerald-900 font-black text-xs">Doanh Thu Thuần</span>
                       <span className="text-[10px] text-emerald-700 font-normal mt-0.5">(= Bán ảnh - Khấu trừ)</span>
+                    </div>
+                  </th>
+                  <th className="py-3 px-3 w-44 text-right bg-orange-50/80 text-orange-950 border-l border-orange-200 font-black text-sm" title="Tổng Chi Phí Vật Tư Tiêu Hao (Tháng) = Tổng lũy kế cột Chi Phí Nguyên Vật Liệu của tất cả các ngày trong tháng đó">
+                    <div className="flex flex-col items-end">
+                      <span className="text-orange-900 font-black text-xs">Tổng Chi Phí Vật Tư Tiêu Hao (VNĐ)</span>
+                      <span className="text-[10px] text-orange-700 font-normal mt-0.5">(Lũy kế NVL từng ngày)</span>
+                    </div>
+                  </th>
+                  <th className="py-3 px-3 w-44 text-right bg-blue-50/80 text-blue-950 border-l border-blue-200 font-black text-sm" title="Lợi Nhuận Gộp Ước Tính (Tháng) = [Doanh Thu Thuần] - [Tổng Chi Phí Vật Tư Tiêu Hao]">
+                    <div className="flex flex-col items-end">
+                      <span className="text-blue-950 font-black text-xs">Lợi Nhuận Gộp Ước Tính (VNĐ)</span>
+                      <span className="text-[10px] text-blue-700 font-normal mt-0.5">(= DT thuần - Vật tư)</span>
                     </div>
                   </th>
                   <th className="py-3 px-3 w-28 text-center">Hành Động</th>
@@ -669,6 +745,12 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
                       —
                     </td>
                     <td className="py-3 px-3 text-right font-mono font-black text-amber-900 text-sm border-l border-amber-200 bg-amber-100/50">
+                      {formatCurrency(totalCustomersInitialRevenue)}
+                    </td>
+                    <td className="py-3 px-3 text-right font-mono text-slate-400 border-l border-amber-200 text-xs">
+                      —
+                    </td>
+                    <td className="py-3 px-3 text-right font-mono font-black text-amber-900 text-sm border-l border-amber-200 bg-amber-100/30">
                       {formatCurrency(totalCustomersInitialRevenue)}
                     </td>
                     <td className="py-3 px-3 text-center text-xs font-semibold text-amber-800">
@@ -702,7 +784,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
                         {formatCurrency(m.revenue)}
                       </td>
 
-                      {/* CỘT 1: KHẤU TRỪ DOANH THU (NHẬP THỦ CÔNG) */}
+                      {/* KHẤU TRỪ DOANH THU (NHẬP THỦ CÔNG) */}
                       <td className="py-2 px-3 text-right bg-rose-50/30 border-l border-rose-100">
                         <div className="flex items-center justify-end gap-1">
                           <input
@@ -724,9 +806,21 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
                         </div>
                       </td>
 
-                      {/* CỘT 2: DOANH THU THUẦN (= DOANH THU BÁN ẢNH - KHẤU TRỪ DOANH THU) */}
+                      {/* DOANH THU THUẦN (= DOANH THU BÁN ẢNH - KHẤU TRỪ DOANH THU) */}
                       <td className="py-3 px-3 text-right font-mono font-black text-emerald-800 text-sm bg-emerald-50/40 border-l border-emerald-100">
                         {formatCurrency(m.netRevenue)}
+                      </td>
+
+                      {/* CỘT BỔ SUNG 1: TỔNG CHI PHÍ VẬT TƯ TIÊU HOA (VNĐ) */}
+                      <td className="py-3 px-3 text-right font-mono font-bold text-orange-900 text-sm bg-orange-50/30 border-l border-orange-100">
+                        {formatCurrency(m.materialCost)}
+                      </td>
+
+                      {/* CỘT BỔ SUNG 2: LỢI NHUẬN GỘP ƯỚC TÍNH (VNĐ) (= [Doanh Thu Thuần] - [Tổng Chi Phí Vật Tư Tiêu Hao]) */}
+                      <td className={`py-3 px-3 text-right font-mono font-black text-sm border-l border-blue-100 ${
+                        m.grossProfit >= 0 ? 'bg-blue-50/40 text-blue-900' : 'bg-rose-50/60 text-rose-700'
+                      }`}>
+                        {formatCurrency(m.grossProfit)}
                       </td>
 
                       <td className="py-3 px-3 text-center">
@@ -767,6 +861,12 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
                   </td>
                   <td className="py-3.5 px-3 text-right font-mono text-amber-400 text-base font-black border-l border-slate-800 bg-slate-950/40">
                     {formatCurrency(totalNetRevenue)}
+                  </td>
+                  <td className="py-3.5 px-3 text-right font-mono text-orange-300 text-sm font-bold border-l border-slate-800">
+                    {formatCurrency(totalYearMaterialCost)}
+                  </td>
+                  <td className="py-3.5 px-3 text-right font-mono text-blue-300 text-base font-black border-l border-slate-800 bg-slate-950/60">
+                    {formatCurrency(totalYearGrossProfit)}
                   </td>
                   <td className="py-3.5 px-3 text-center text-slate-400 text-xs font-normal">
                     12 Tháng
@@ -922,10 +1022,22 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
             <table className="w-full text-left text-xs border-collapse">
               <thead>
                 <tr className="bg-slate-100 text-slate-700 font-extrabold border-b border-slate-200">
-                  <th className="py-3 px-4 w-44">Ngày</th>
+                  <th className="py-3 px-4 w-40">Ngày</th>
                   <th className="py-3 px-4 w-36">Vị Trí / Đánh Giá</th>
-                  <th className="py-3 px-4 w-28 text-center">Số Đơn</th>
+                  <th className="py-3 px-4 w-24 text-center">Số Đơn</th>
                   <th className="py-3 px-4 text-right text-sm">Doanh Số Ngày (VNĐ)</th>
+                  <th className="py-3 px-4 text-right text-xs bg-orange-50/70 text-orange-950 border-l border-orange-200 font-black" title="Chi Phí Nguyên Vật Liệu (Ngày) = Tổng (Số lượng từng sản phẩm x Giá vốn định mức tương ứng)">
+                    <div className="flex flex-col items-end">
+                      <span>Chi Phí Nguyên Vật Liệu (VNĐ)</span>
+                      <span className="text-[10px] text-orange-700 font-normal mt-0.5">(Giá vốn định mức)</span>
+                    </div>
+                  </th>
+                  <th className="py-3 px-4 text-right text-xs bg-blue-50/70 text-blue-950 border-l border-blue-200 font-black" title="Lợi Nhuận Gộp Ước Tính (Ngày) = [Doanh Số Ngày] - [Chi Phí Nguyên Vật Liệu]">
+                    <div className="flex flex-col items-end">
+                      <span>Lợi Nhuận Gộp Ước Tính (VNĐ)</span>
+                      <span className="text-[10px] text-blue-700 font-normal mt-0.5">(= Doanh số - NVL)</span>
+                    </div>
+                  </th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -1016,6 +1128,30 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
                           <span className="text-slate-300 font-normal">0 đ</span>
                         )}
                       </td>
+
+                      {/* CỘT BỔ SUNG 1: Chi Phí Nguyên Vật Liệu (VNĐ) */}
+                      <td className="py-3 px-4 text-right font-mono font-bold text-orange-900 text-xs bg-orange-50/20 border-l border-orange-100">
+                        {d.materialCost > 0 ? (
+                          formatCurrency(d.materialCost)
+                        ) : (
+                          <span className="text-slate-300 font-normal">0 đ</span>
+                        )}
+                      </td>
+
+                      {/* CỘT BỔ SUNG 2: Lợi Nhuận Gộp Ước Tính (VNĐ) */}
+                      <td className={`py-3 px-4 text-right font-mono font-black text-xs border-l border-blue-100 ${
+                        d.grossProfit > 0
+                          ? 'bg-blue-50/30 text-blue-900'
+                          : d.grossProfit < 0
+                          ? 'bg-rose-50/40 text-rose-700'
+                          : 'text-slate-400'
+                      }`}>
+                        {d.revenue > 0 || d.materialCost > 0 ? (
+                          formatCurrency(d.grossProfit)
+                        ) : (
+                          <span className="text-slate-300 font-normal">0 đ</span>
+                        )}
+                      </td>
                     </tr>
                   );
                 })}
@@ -1031,6 +1167,12 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
                   </td>
                   <td className="py-3.5 px-4 text-right font-mono text-amber-400 text-base font-black">
                     {formatCurrency(dailyBreakdown.totalMonthRevenue)}
+                  </td>
+                  <td className="py-3.5 px-4 text-right font-mono text-orange-300 text-sm font-bold border-l border-slate-800">
+                    {formatCurrency(dailyBreakdown.totalMonthMaterialCost)}
+                  </td>
+                  <td className="py-3.5 px-4 text-right font-mono text-blue-300 text-base font-black border-l border-slate-800 bg-slate-950/60">
+                    {formatCurrency(dailyBreakdown.totalMonthGrossProfit)}
                   </td>
                 </tr>
               </tfoot>
