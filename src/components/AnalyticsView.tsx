@@ -323,7 +323,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
             <Table2 className="w-4 h-4 text-slate-900" />
             <span>2. Bảng Định Mức Giá Vốn & Tỷ Suất LNG</span>
             <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-900 text-white font-mono font-bold">
-              Mẫu PDF (63 Mã)
+              Đầy đủ Giá Studio
             </span>
           </button>
         </div>

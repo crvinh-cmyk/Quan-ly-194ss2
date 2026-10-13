@@ -216,6 +216,37 @@ export interface ProductCostItem {
 export type ProductCostMap = Record<string, ProductCostItem>;
 
 // =================================================================
+// BẢNG GIÁ CỐT VẬT TƯ (VÁN MDF 9LI, VÁN MDF 12LI, FOMEX 9LI)
+// =================================================================
+export type CoreBoardCategory = 'mdf_9li' | 'mdf_12li' | 'fomex_9li' | 'mdf_9li_hq_1521' | 'mdf_9li_hq_2030' | 'none';
+
+export interface BoardCorePriceRow {
+  size: string;             // Ví dụ: '13x18', '15x21', '1521 9li HQ', '20x30', '2030 9li HQ', '40x60'...
+  code?: string;            // Mã VT kho (e.g. '1521 9li HQ', '2030 9li HQ')
+  name?: string;            // Tên VT kho (e.g. 'Gỗ MDF 1521 9li Viền Hàn Quốc')
+  mdf9li: number;           // Đơn giá Ván MDF 9li (đ/tấm)
+  mdf12li: number;          // Đơn giá Ván MDF 12li (đ/tấm)
+  fomex9li: number;         // Đơn giá Fomex 9li (đ/tấm)
+  updatedAt: string;        // Ngày sửa giá gần nhất (Tự động lưu ngày giờ hệ thống)
+  isKoreanBorder?: boolean; // Đánh dấu vật tư Viền Hàn Quốc
+}
+
+export type BoardCorePriceMap = Record<string, BoardCorePriceRow>;
+
+// =================================================================
+// BẢNG GIÁ VẬT TƯ PHỤ KIỆN (MICA, VIỀN, PHÀO, KEO...)
+// =================================================================
+export interface AccessoryMaterialItem {
+  id: string;               // ID duy nhất (ví dụ: 'acc-1', 'acc-mica-62-03')
+  name: string;             // Tên sản phẩm / vật tư phụ kiện
+  price: number;            // Đơn giá (đ)
+  updatedAt: string;        // Ngày sửa giá gần nhất (ngày giờ hệ thống)
+  category?: string;        // Nhóm phân loại (Mica, Viền, Phào, Keo & Phụ kiện)
+}
+
+export type AccessoryMaterialMap = Record<string, AccessoryMaterialItem>;
+
+// =================================================================
 // ĐỊNH NGHĨA HỆ MỰC IN 12 MÀU CHUYÊN NGHIỆP (CANON LUCIA PRO / IMAGEPROGRAF)
 // PM, R, C, PGY, PBK, MBK, CO, GY, B, Y, M, PC
 // =================================================================

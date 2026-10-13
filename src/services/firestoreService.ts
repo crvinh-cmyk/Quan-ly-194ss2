@@ -9,7 +9,7 @@ import {
   runTransaction
 } from 'firebase/firestore';
 import { db } from '../firebase/config';
-import { Product, Customer, Order, Material, StockImportReceipt, WorkshopInfo, StudioCombo, ProductCostItem, ProductCostMap, InkImportRecord, InkColorCode, S1aDayOverride, S1aManualEntry } from '../types';
+import { Product, Customer, Order, Material, StockImportReceipt, WorkshopInfo, StudioCombo, ProductCostItem, ProductCostMap, InkImportRecord, InkColorCode, S1aDayOverride, S1aManualEntry, BoardCorePriceRow, BoardCorePriceMap, AccessoryMaterialItem, AccessoryMaterialMap } from '../types';
 import { DEFAULT_WORKSHOP_INFO, DEFAULT_INK_IMPORTS } from '../data/initialData';
 
 // User info interface for tagging created/updated records
@@ -798,6 +798,205 @@ export async function saveProductCostsToFirestore(
   };
   const enriched = attachUserInfo(payload, user);
   await setDoc(docRef, cleanFirestoreObject(enriched), { merge: true });
+}
+
+// =================================================================
+// 9.1 BẢNG GIÁ CỐT VẬT TƯ (VÁN MDF 9LI, VÁN MDF 12LI, FOMEX 9LI)
+// =================================================================
+export const DEFAULT_BOARD_CORE_PRICES: BoardCorePriceMap = {
+  '13x18': { size: '13x18', mdf9li: 8000, mdf12li: 10000, fomex9li: 9000, updatedAt: '13/10/2026 08:00' },
+  '15x21': { size: '15x21', mdf9li: 10000, mdf12li: 12000, fomex9li: 11000, updatedAt: '13/10/2026 08:00' },
+  '1521 9li HQ': { size: '15x21', code: '1521 9li HQ', name: 'Gỗ MDF 1521 9li Viền Hàn Quốc', mdf9li: 15000, mdf12li: 0, fomex9li: 0, updatedAt: '13/10/2026 08:00', isKoreanBorder: true },
+  '20x30': { size: '20x30', mdf9li: 14000, mdf12li: 17000, fomex9li: 15000, updatedAt: '13/10/2026 08:00' },
+  '2030 9li HQ': { size: '2030 9li HQ', code: '2030 9li HQ', name: 'Gỗ MDF 2030 dày 9 li viền Hàn Quốc', mdf9li: 20000, mdf12li: 0, fomex9li: 0, updatedAt: '13/10/2026 08:00', isKoreanBorder: true },
+  '25x38': { size: '25x38', mdf9li: 15000, mdf12li: 18000, fomex9li: 17000, updatedAt: '13/10/2026 08:00' },
+  '30x45': { size: '30x45', mdf9li: 16000, mdf12li: 20000, fomex9li: 22000, updatedAt: '13/10/2026 08:00' },
+  '35x50': { size: '35x50', mdf9li: 18000, mdf12li: 23000, fomex9li: 25000, updatedAt: '13/10/2026 08:00' },
+  '40x60': { size: '40x60', mdf9li: 20265, mdf12li: 26520, fomex9li: 28000, updatedAt: '13/10/2026 08:00' },
+  '50x75': { size: '50x75', mdf9li: 26000, mdf12li: 32000, fomex9li: 35000, updatedAt: '13/10/2026 08:00' },
+  '60x90': { size: '60x90', mdf9li: 38000, mdf12li: 45000, fomex9li: 48000, updatedAt: '13/10/2026 08:00' },
+  '60x120': { size: '60x120', mdf9li: 48000, mdf12li: 58000, fomex9li: 62000, updatedAt: '13/10/2026 08:00' },
+  '70x110': { size: '70x110', mdf9li: 55000, mdf12li: 65000, fomex9li: 70000, updatedAt: '13/10/2026 08:00' },
+  '80x120': { size: '80x120', mdf9li: 70000, mdf12li: 85000, fomex9li: 90000, updatedAt: '13/10/2026 08:00' },
+  '100x150': { size: '100x150', mdf9li: 110000, mdf12li: 135000, fomex9li: 145000, updatedAt: '13/10/2026 08:00' },
+  '110x180': { size: '110x180', mdf9li: 150000, mdf12li: 185000, fomex9li: 195000, updatedAt: '13/10/2026 08:00' },
+  '120x240': { size: '120x240', mdf9li: 210000, mdf12li: 260000, fomex9li: 280000, updatedAt: '13/10/2026 08:00' }
+};
+
+const BOARD_CORE_PRICES_LOCAL_KEY = 'tiem_in_194_board_core_prices_v1';
+
+export function getLocalBoardCorePrices(): BoardCorePriceMap {
+  try {
+    const raw = localStorage.getItem(BOARD_CORE_PRICES_LOCAL_KEY);
+    if (!raw) return DEFAULT_BOARD_CORE_PRICES;
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && Object.keys(parsed).length > 0) {
+      delete parsed['20x20'];
+      delete parsed['30x30'];
+      return { ...DEFAULT_BOARD_CORE_PRICES, ...parsed };
+    }
+    return DEFAULT_BOARD_CORE_PRICES;
+  } catch (e) {
+    return DEFAULT_BOARD_CORE_PRICES;
+  }
+}
+
+export function saveLocalBoardCorePrices(prices: BoardCorePriceMap): void {
+  try {
+    const cleanMap = { ...prices };
+    delete cleanMap['20x20'];
+    delete cleanMap['30x30'];
+    localStorage.setItem(BOARD_CORE_PRICES_LOCAL_KEY, JSON.stringify(cleanMap));
+  } catch (e) {
+    console.error('Error saving local board core prices:', e);
+  }
+}
+
+export function subscribeBoardCorePrices(
+  onData: (prices: BoardCorePriceMap) => void,
+  onError?: (err: Error) => void
+) {
+  const docRef = doc(db, COLLECTIONS.SETTINGS, 'board_core_prices');
+  return onSnapshot(docRef, { includeMetadataChanges: false }, (snapshot) => {
+    if (snapshot.exists()) {
+      const raw = snapshot.data();
+      const prices: BoardCorePriceMap = (raw.prices && typeof raw.prices === 'object') ? raw.prices : {};
+      delete prices['20x20'];
+      delete prices['30x30'];
+      const merged = { ...DEFAULT_BOARD_CORE_PRICES, ...prices };
+      delete merged['20x20'];
+      delete merged['30x30'];
+      saveLocalBoardCorePrices(merged);
+      onData(merged);
+    } else {
+      const initial = getLocalBoardCorePrices();
+      onData(initial);
+    }
+  }, (error) => {
+    console.error('Firestore board_core_prices onSnapshot error:', error);
+    onData(getLocalBoardCorePrices());
+    if (onError) onError(error);
+  });
+}
+
+export async function saveBoardCorePricesToFirestore(
+  prices: BoardCorePriceMap,
+  user?: AuthUserContext | null
+): Promise<void> {
+  saveLocalBoardCorePrices(prices);
+  try {
+    const docRef = doc(db, COLLECTIONS.SETTINGS, 'board_core_prices');
+    const payload = {
+      prices,
+      updatedAt: new Date().toISOString()
+    };
+    const enriched = attachUserInfo(payload, user);
+    await setDoc(docRef, cleanFirestoreObject(enriched), { merge: true });
+  } catch (e) {
+    console.error('Error saving board core prices to Firestore:', e);
+  }
+}
+
+// =================================================================
+// 9.2 BẢNG GIÁ VẬT TƯ PHỤ KIỆN (MICA, VIỀN, PHÀO, KEO...)
+// =================================================================
+export const DEFAULT_ACCESSORY_MATERIALS: AccessoryMaterialItem[] = [
+  { id: 'acc-1', name: 'Mica 62-03', price: 0, updatedAt: '13/10/2026 08:00', category: 'Mica' },
+  { id: 'acc-2', name: 'Mica 76-03', price: 0, updatedAt: '13/10/2026 08:00', category: 'Mica' },
+  { id: 'acc-3', name: 'Mica nhiệt gương 62-04', price: 0, updatedAt: '13/10/2026 08:00', category: 'Mica' },
+  { id: 'acc-4', name: 'Mica nhiệt gương 76-04', price: 0, updatedAt: '13/10/2026 08:00', category: 'Mica' },
+  { id: 'acc-5', name: 'Mica nhiệt gương 107-04', price: 0, updatedAt: '13/10/2026 08:00', category: 'Mica' },
+  { id: 'acc-6', name: 'Mica nguội gương 127-04', price: 0, updatedAt: '13/10/2026 08:00', category: 'Mica' },
+  { id: 'acc-7', name: 'Mica nguội 107', price: 0, updatedAt: '13/10/2026 08:00', category: 'Mica' },
+  { id: 'acc-8', name: 'Mica nguội 127', price: 0, updatedAt: '13/10/2026 08:00', category: 'Mica' },
+  { id: 'acc-9', name: 'Viền 13 li', price: 0, updatedAt: '13/10/2026 08:00', category: 'Viền' },
+  { id: 'acc-10', name: 'Viền 10 li', price: 0, updatedAt: '13/10/2026 08:00', category: 'Viền' },
+  { id: 'acc-11', name: 'Phào 3412 nâu', price: 0, updatedAt: '13/10/2026 08:00', category: 'Phào' },
+  { id: 'acc-12', name: '2v', price: 0, updatedAt: '13/10/2026 08:00', category: 'Phào' },
+  { id: 'acc-13', name: 'Phào 2525', price: 0, updatedAt: '13/10/2026 08:00', category: 'Phào' },
+  { id: 'acc-14', name: 'Phào 526 (521)', price: 0, updatedAt: '13/10/2026 08:00', category: 'Phào' },
+  { id: 'acc-15', name: 'Phào 602 nâu', price: 0, updatedAt: '13/10/2026 08:00', category: 'Phào' },
+  { id: 'acc-16', name: 'Phào 2009 nâu', price: 0, updatedAt: '13/10/2026 08:00', category: 'Phào' },
+  { id: 'acc-17', name: 'Phào Titan 1', price: 0, updatedAt: '13/10/2026 08:00', category: 'Phào' },
+  { id: 'acc-18', name: 'Phào Titan 2', price: 0, updatedAt: '13/10/2026 08:00', category: 'Phào' },
+  { id: 'acc-19', name: 'Keo sữa', price: 0, updatedAt: '13/10/2026 08:00', category: 'Keo & Phụ kiện' },
+  { id: 'acc-20', name: 'Chân chống sắt', price: 0, updatedAt: '13/10/2026 08:00', category: 'Keo & Phụ kiện' },
+  { id: 'acc-21', name: 'Ke góc nhựa trắng to', price: 0, updatedAt: '13/10/2026 08:00', category: 'Keo & Phụ kiện' },
+  { id: 'acc-22', name: 'Keo hạt', price: 0, updatedAt: '13/10/2026 08:00', category: 'Keo & Phụ kiện' }
+];
+
+const ACCESSORY_MATERIALS_LOCAL_KEY = 'tiem_in_194_accessory_materials_v1';
+
+export function getLocalAccessoryMaterials(): AccessoryMaterialItem[] {
+  try {
+    const raw = localStorage.getItem(ACCESSORY_MATERIALS_LOCAL_KEY);
+    if (!raw) return DEFAULT_ACCESSORY_MATERIALS;
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      const existingIds = new Set(parsed.map((item: AccessoryMaterialItem) => item.id));
+      const missingDefaults = DEFAULT_ACCESSORY_MATERIALS.filter(def => !existingIds.has(def.id));
+      return [...parsed, ...missingDefaults];
+    }
+    return DEFAULT_ACCESSORY_MATERIALS;
+  } catch (e) {
+    return DEFAULT_ACCESSORY_MATERIALS;
+  }
+}
+
+export function saveLocalAccessoryMaterials(items: AccessoryMaterialItem[]): void {
+  try {
+    localStorage.setItem(ACCESSORY_MATERIALS_LOCAL_KEY, JSON.stringify(items));
+  } catch (e) {
+    console.error('Error saving local accessory materials:', e);
+  }
+}
+
+export function subscribeAccessoryMaterials(
+  onData: (items: AccessoryMaterialItem[]) => void,
+  onError?: (err: Error) => void
+) {
+  const docRef = doc(db, COLLECTIONS.SETTINGS, 'accessory_materials');
+  return onSnapshot(docRef, { includeMetadataChanges: false }, (snapshot) => {
+    if (snapshot.exists()) {
+      const raw = snapshot.data();
+      const items: AccessoryMaterialItem[] = Array.isArray(raw.items) ? raw.items : [];
+      if (items.length === 0) {
+        const initial = getLocalAccessoryMaterials();
+        onData(initial);
+      } else {
+        const existingIds = new Set(items.map(item => item.id));
+        const missingDefaults = DEFAULT_ACCESSORY_MATERIALS.filter(def => !existingIds.has(def.id));
+        const merged = [...items, ...missingDefaults];
+        saveLocalAccessoryMaterials(merged);
+        onData(merged);
+      }
+    } else {
+      const initial = getLocalAccessoryMaterials();
+      onData(initial);
+    }
+  }, (error) => {
+    console.error('Firestore accessory_materials onSnapshot error:', error);
+    onData(getLocalAccessoryMaterials());
+    if (onError) onError(error);
+  });
+}
+
+export async function saveAccessoryMaterialsToFirestore(
+  items: AccessoryMaterialItem[],
+  user?: AuthUserContext | null
+): Promise<void> {
+  saveLocalAccessoryMaterials(items);
+  try {
+    const docRef = doc(db, COLLECTIONS.SETTINGS, 'accessory_materials');
+    const payload = {
+      items,
+      updatedAt: new Date().toISOString()
+    };
+    const enriched = attachUserInfo(payload, user);
+    await setDoc(docRef, cleanFirestoreObject(enriched), { merge: true });
+  } catch (e) {
+    console.error('Error saving accessory materials to Firestore:', e);
+  }
 }
 
 // =================================================================

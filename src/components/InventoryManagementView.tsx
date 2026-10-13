@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { MoneyInput } from './MoneyInput';
 import { InkInventoryTracking } from './InkInventoryTracking';
+import { BoardCorePriceTable } from './BoardCorePriceTable';
 import {
   subscribeInventoryPresets,
   saveInventoryPresetsToFirestore,
@@ -63,8 +64,8 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
   onResetStockToZero,
   onReloadDefaultMaterials
 }) => {
-  // Active Sub-tab: 'inventory' | 'supplier_expenses' | 'ink_tracking' | 'history' | 'sales_deductions'
-  const [activeSubTab, setActiveSubTab] = useState<'inventory' | 'supplier_expenses' | 'ink_tracking' | 'history' | 'sales_deductions'>('inventory');
+  // Active Sub-tab: 'inventory' | 'supplier_expenses' | 'ink_tracking' | 'history' | 'board_prices' | 'sales_deductions'
+  const [activeSubTab, setActiveSubTab] = useState<'inventory' | 'supplier_expenses' | 'ink_tracking' | 'history' | 'board_prices' | 'sales_deductions'>('inventory');
   
   // Filters for Material Inventory
   const [searchQuery, setSearchQuery] = useState('');
@@ -795,6 +796,19 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
         >
           <FileText className="w-4 h-4" />
           <span>Lịch Sử Các Đợt Nhập ({stockImports.length})</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveSubTab('board_prices')}
+          className={`flex items-center gap-2 px-4 py-2.5 font-bold text-sm border-b-2 transition cursor-pointer shrink-0 ${
+            activeSubTab === 'board_prices'
+              ? 'border-amber-500 text-amber-800 bg-amber-50/60 shadow-2xs'
+              : 'border-transparent text-slate-600 hover:text-slate-900'
+          }`}
+        >
+          <Layers className="w-4 h-4 text-amber-600" />
+          <span>Bảng Giá Cốt Vật Tư</span>
         </button>
 
         <button
@@ -1543,6 +1557,11 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
             </div>
           </div>
         </div>
+      )}
+
+      {/* SUB-TAB: BẢNG GIÁ CỐT VẬT TƯ */}
+      {activeSubTab === 'board_prices' && (
+        <BoardCorePriceTable currentUserEmail={undefined} />
       )}
 
       {/* SUB-TAB 4: SALES ORDERS MATERIAL DEDUCTIONS */}

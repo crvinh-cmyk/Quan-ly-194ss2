@@ -152,8 +152,25 @@ export function resolveProductCoreMaterial(
   }
 
   // Gỗ MDF:
-  const mdfMat = materials.find(m => m.category === 'Gỗ MDF' && normSize && normalizeSize(m.code).includes(normSize))
-    || materials.find(m => m.category === 'Gỗ MDF');
+  const textDesc = `${prod.code || ''} ${prod.name || ''} ${prod.note || ''} ${prod.description || ''}`.toLowerCase();
+  const prefers9li = textDesc.includes('9li') || textDesc.includes('9mm') || textDesc.includes('lụa') || textDesc.includes('lv') || (textDesc.includes('mika') && !textDesc.includes('k10') && !textDesc.includes('k11') && !textDesc.includes('tt'));
+  const prefers12li = textDesc.includes('12li') || textDesc.includes('12mm') || textDesc.includes('hd') || textDesc.includes('gương');
+
+  let mdfMat = materials.find(m => {
+    if (m.category !== 'Gỗ MDF') return false;
+    const mNorm = normalizeSize(m.code);
+    if (!normSize || !mNorm.includes(normSize)) return false;
+    if (normSize === '4060') {
+      if (prefers9li && (m.code.includes('9LI') || m.name.includes('9li'))) return true;
+      if (prefers12li && (!m.code.includes('9LI') && !m.name.includes('9li'))) return true;
+    }
+    return true;
+  });
+
+  if (!mdfMat) {
+    mdfMat = materials.find(m => m.category === 'Gỗ MDF' && normSize && normalizeSize(m.code).includes(normSize))
+      || materials.find(m => m.category === 'Gỗ MDF');
+  }
   if (mdfMat) {
     return {
       materialCoreCode: mdfMat.code,

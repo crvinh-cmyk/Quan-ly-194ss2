@@ -183,6 +183,27 @@ function generateStandardProducts(): Product[] {
       if (t.key === 'in' && (size === '80*120' || size === '6*9')) return;
 
       const price = PHOTO_PRICING_MATRIX[size][t.key].studio;
+
+      // Cấu hình cốt vật tư cho các sản phẩm kích thước 40*60:
+      // - 9li (20.265 đ): LVST (Lụa Viền) & MKST (Mika Phổ Thông)
+      // - 12li (26.520 đ): HDST (HD Gương Siêu Bóng)
+      // - Không dùng cốt: inST (In kỹ thuật số) & inepST (In ép mika)
+      let materialCoreCode: string | undefined = undefined;
+      let materialCoreName: string | undefined = undefined;
+
+      if (size === '40*60') {
+        if (t.key === 'lv' || t.key === 'mk') {
+          materialCoreCode = 'VT-GO-4060-9LI';
+          materialCoreName = 'Gỗ MDF 40x60 9li Tiêu Chuẩn (20.265 đ)';
+        } else if (t.key === 'hd') {
+          materialCoreCode = 'VT-GO-4060';
+          materialCoreName = 'Gỗ MDF 40x60 12li Lõi Xanh Chống Ẩm (26.520 đ)';
+        } else if (t.key === 'in' || t.key === 'inep') {
+          materialCoreCode = 'NONE';
+          materialCoreName = 'Không dùng cốt ván';
+        }
+      }
+
       studioProducts.push({
         id: `prod-${t.key}-st-${size.replace('*', 'x')}`,
         code: `${t.prefix.studio}${size}`,
@@ -190,7 +211,9 @@ function generateStandardProducts(): Product[] {
         size,
         price,
         category: 'GIÁ STUDIO',
-        unit: 'tấm'
+        unit: 'tấm',
+        materialCoreCode,
+        materialCoreName
       });
     });
   });
@@ -570,11 +593,25 @@ export const DEFAULT_MATERIALS: Material[] = [
     name: 'Gỗ MDF 40x60 12li Lõi Xanh Chống Ẩm',
     category: 'Gỗ MDF',
     unit: 'Tấm',
-    costPrice: 26000,
+    costPrice: 26520,
     stockQuantity: 28,
     minStockAlert: 10,
     supplier: 'Xưởng Gỗ Công Nghiệp Phú Mỹ',
-    notes: 'Dùng cho ảnh treo tường cỡ vừa',
+    notes: 'Ván 12li lõi xanh dùng cho ảnh treo tường & ảnh HD gương (Đơn giá chuẩn: 26.520 đ)',
+    createdAt: '2026-01-05',
+    updatedAt: '2026-01-05'
+  },
+  {
+    id: 'mat-02b-9li',
+    code: 'VT-GO-4060-9LI',
+    name: 'Gỗ MDF 40x60 9li Tiêu Chuẩn',
+    category: 'Gỗ MDF',
+    unit: 'Tấm',
+    costPrice: 20265,
+    stockQuantity: 30,
+    minStockAlert: 10,
+    supplier: 'Xưởng Gỗ Công Nghiệp Phú Mỹ',
+    notes: 'Ván 9li tiêu chuẩn dùng cho ảnh viền bo mỏng Lụa & Mika (Đơn giá chuẩn: 20.265 đ)',
     createdAt: '2026-01-05',
     updatedAt: '2026-01-05'
   },
@@ -607,6 +644,20 @@ export const DEFAULT_MATERIALS: Material[] = [
     updatedAt: '2026-01-05'
   },
   {
+    id: 'mat-03-hq-2030',
+    code: '2030 9li HQ',
+    name: 'Gỗ MDF 2030 dày 9 li viền Hàn Quốc',
+    category: 'Gỗ MDF',
+    unit: 'Tấm',
+    costPrice: 20000,
+    stockQuantity: 45,
+    minStockAlert: 10,
+    supplier: 'Xưởng Khung Viền Nhập Khẩu Hàn Quốc',
+    notes: 'Khung viền Hàn Quốc cao cấp 20x30',
+    createdAt: '2026-01-05',
+    updatedAt: '2026-01-05'
+  },
+  {
     id: 'mat-03b',
     code: 'VT-GO-1521',
     name: 'Gỗ MDF 15x21 9li Để Bàn',
@@ -617,6 +668,20 @@ export const DEFAULT_MATERIALS: Material[] = [
     minStockAlert: 15,
     supplier: 'Xưởng Gỗ Công Nghiệp Phú Mỹ',
     notes: 'Khổ ảnh bàn tiệc cưới phổ biến',
+    createdAt: '2026-01-05',
+    updatedAt: '2026-01-05'
+  },
+  {
+    id: 'mat-03b-hq-1521',
+    code: '1521 9li HQ',
+    name: 'Gỗ MDF 1521 9li Viền Hàn Quốc',
+    category: 'Gỗ MDF',
+    unit: 'Tấm',
+    costPrice: 15000,
+    stockQuantity: 50,
+    minStockAlert: 10,
+    supplier: 'Xưởng Khung Viền Nhập Khẩu Hàn Quốc',
+    notes: 'Khung viền Hàn Quốc cao cấp 15x21',
     createdAt: '2026-01-05',
     updatedAt: '2026-01-05'
   },

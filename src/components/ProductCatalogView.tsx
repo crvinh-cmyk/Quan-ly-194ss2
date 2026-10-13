@@ -2324,28 +2324,31 @@ export const ProductCatalogView: React.FC<ProductCatalogViewProps> = ({
                   <span className="text-[10px] text-slate-500 font-bold">Gợi ý nhanh theo cỡ:</span>
                   {(() => {
                     const normSize = normalizeSize(size || code || name);
-                    const suggestedMdf = materials.find(m => m.category === 'Gỗ MDF' && normSize && normalizeSize(m.code).includes(normSize)) || materials.find(m => m.category === 'Gỗ MDF');
+                    const matchingMdfList = materials.filter(m => m.category === 'Gỗ MDF' && normSize && normalizeSize(m.code).includes(normSize));
+                    const suggestedMdfList = matchingMdfList.length > 0 ? matchingMdfList : (materials.filter(m => m.category === 'Gỗ MDF').slice(0, 1));
                     const suggestedFomex = materials.find(m => m.category === 'Fomex siêu nhẹ' && normSize && normalizeSize(m.code).includes(normSize)) || materials.find(m => m.category === 'Fomex siêu nhẹ');
 
                     return (
                       <>
-                        {suggestedMdf && (
+                        {suggestedMdfList.map(mdf => (
                           <button
+                            key={mdf.id || mdf.code}
                             type="button"
                             onClick={() => {
-                              setMaterialCoreCode(suggestedMdf.code);
-                              setMaterialCoreName(suggestedMdf.name);
-                              setMaterialCoreId(suggestedMdf.id);
+                              setMaterialCoreCode(mdf.code);
+                              setMaterialCoreName(mdf.name);
+                              setMaterialCoreId(mdf.id);
                             }}
                             className={`px-2 py-0.5 rounded-lg text-[10px] font-bold border transition cursor-pointer ${
-                              materialCoreCode.toUpperCase() === suggestedMdf.code.toUpperCase()
+                              materialCoreCode.toUpperCase() === mdf.code.toUpperCase()
                                 ? 'bg-amber-600 text-white border-amber-600'
                                 : 'bg-white hover:bg-amber-100 text-amber-900 border-amber-300'
                             }`}
+                            title={mdf.name}
                           >
-                            🪵 Gán MDF ({suggestedMdf.code})
+                            🪵 Gán MDF ({mdf.code})
                           </button>
-                        )}
+                        ))}
                         {suggestedFomex && (
                           <button
                             type="button"
