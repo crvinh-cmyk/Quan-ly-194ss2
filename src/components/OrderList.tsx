@@ -152,7 +152,22 @@ export const OrderList: React.FC<OrderListProps> = ({
 
                     {/* Date */}
                     <td className="py-3 px-2.5 text-center font-mono text-[11px] text-slate-600">
-                      {formatDateVN(order.date)}
+                      <div>{formatDateVN(order.date)}</div>
+                      {(() => {
+                        const suppItems = (order.items || []).filter(it => it.date && it.date !== order.date);
+                        if (suppItems.length > 0) {
+                          const latestDate = suppItems.map(it => it.date).sort().reverse()[0];
+                          return (
+                            <span
+                              className="inline-block mt-0.5 px-1.5 py-0.2 rounded text-[9px] font-bold bg-blue-100 text-blue-800 border border-blue-200"
+                              title={`Có ${suppItems.length} sản phẩm bổ sung ngày ${formatDateVN(latestDate)}`}
+                            >
+                              + Bổ sung {formatDateVN(latestDate).slice(0, 5)}
+                            </span>
+                          );
+                        }
+                        return null;
+                      })()}
                     </td>
 
                     {/* Customer */}

@@ -306,6 +306,131 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
     return orders.filter(o => o.status !== 'cancelled').length;
   }, [orders]);
 
+  // Filter state for Sub-tab 4: Lịch sử vật tư khấu trừ theo đơn bán hàng
+  const [deductionsDateFilter, setDeductionsDateFilter] = useState<'all' | 'today' | 'yesterday' | '7days' | 'custom'>('all');
+  const [deductionsCustomDate, setDeductionsCustomDate] = useState<string>('');
+  const [deductionsSearchQuery, setDeductionsSearchQuery] = useState<string>('');
+
+  const todayStr = useMemo(() => new Date().toISOString().slice(0, 10), []);
+  const yesterdayStr = useMemo(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 1);
+    return d.toISOString().slice(0, 10);
+  }, []);
+  const sevenDaysAgoStr = useMemo(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 7);
+    return d.toISOString().slice(0, 10);
+  }, []);
+
+  // Danh sách các đợt khấu trừ kho theo đơn hàng và ngày thực tế (hàng bổ sung tách thành đợt riêng theo ngày bổ sung)
+  const salesDeductionRecords = useMemo(() => {
+    const records: {
+      id: string;
+      orderId: string;
+      orderNumber: string;
+      orderDate: string;
+      deductionDate: string;
+      isSupplement: boolean;
+      customerName: string;
+      items: OrderItem[];
+      deductions: MaterialDeduction[];
+      status: string;
+    }[] = [];
+
+    const validOrders = orders.filter(o => o.status !== 'cancelled');
+
+    validOrders.forEach(ord => {
+      // Tìm tất cả các ngày khác nhau phát sinh trong đơn (từ items hoặc materialsDeducted)
+      const dateSet = new Set<string>();
+      if (ord.date) dateSet.add(ord.date);
+
+      (ord.items || []).forEach(it => {
+        if (it.date) dateSet.add(it.date);
+      });
+
+      (ord.materialsDeducted || []).forEach(d => {
+        if (d.date) dateSet.add(d.date);
+      });
+
+      const dates = Array.from(dateSet).sort();
+
+      if (dates.length <= 1) {
+        // Đơn tạo 1 lần trong 1 ngày duy nhất
+        const dDate = dates[0] || ord.date || '';
+        const deductions = (ord.materialsDeducted && ord.materialsDeducted.length > 0)
+          ? ord.materialsDeducted
+          : createMaterialDeductionRecords(calculateOrderBOM(ord.items || [], materials, products));
+
+        records.push({
+          id: `${ord.id}-${dDate}`,
+          orderId: ord.id,
+          orderNumber: ord.orderNumber,
+          orderDate: ord.date,
+          deductionDate: dDate,
+          isSupplement: false,
+          customerName: ord.customerName,
+          items: ord.items || [],
+          deductions,
+          status: ord.status
+        });
+      } else {
+        // Đơn có các đợt phát sinh ở các ngày khác nhau (ngày tạo đơn gốc vs ngày bổ sung)
+        dates.forEach(curDate => {
+          const dateItems = (ord.items || []).filter(it => (it.date || ord.date) === curDate);
+          if (dateItems.length === 0) return;
+
+          // Vật tư đã trừ ứng với ngày này:
+          let dateDeductions = (ord.materialsDeducted || []).filter(d => (d.date || ord.date) === curDate);
+
+          if (dateDeductions.length === 0 && dateItems.length > 0) {
+            dateDeductions = createMaterialDeductionRecords(calculateOrderBOM(dateItems, materials, products));
+          }
+
+          const isSupp = curDate !== ord.date;
+
+          records.push({
+            id: `${ord.id}-${curDate}`,
+            orderId: ord.id,
+            orderNumber: ord.orderNumber,
+            orderDate: ord.date,
+            deductionDate: curDate,
+            isSupplement: isSupp,
+            customerName: ord.customerName,
+            items: dateItems,
+            deductions: dateDeductions,
+            status: ord.status
+          });
+        });
+      }
+    });
+
+    // Sắp xếp các đợt trừ kho theo ngày mới nhất lên đầu
+    return records.sort((a, b) => b.deductionDate.localeCompare(a.deductionDate));
+  }, [orders, materials, products]);
+
+  const filteredDeductionRecords = useMemo(() => {
+    return salesDeductionRecords.filter(rec => {
+      // 1. Lọc theo ngày
+      if (deductionsDateFilter === 'today' && rec.deductionDate !== todayStr) return false;
+      if (deductionsDateFilter === 'yesterday' && rec.deductionDate !== yesterdayStr) return false;
+      if (deductionsDateFilter === '7days' && rec.deductionDate < sevenDaysAgoStr) return false;
+      if (deductionsDateFilter === 'custom' && deductionsCustomDate && rec.deductionDate !== deductionsCustomDate) return false;
+
+      // 2. Tìm kiếm
+      if (deductionsSearchQuery.trim()) {
+        const q = deductionsSearchQuery.toLowerCase().trim();
+        const matchNum = rec.orderNumber.toLowerCase().includes(q);
+        const matchCust = rec.customerName.toLowerCase().includes(q);
+        const matchItem = rec.items.some(it => it.productName.toLowerCase().includes(q) || it.productCode.toLowerCase().includes(q));
+        const matchMat = rec.deductions.some(d => d.materialName.toLowerCase().includes(q) || d.materialCode.toLowerCase().includes(q));
+        if (!matchNum && !matchCust && !matchItem && !matchMat) return false;
+      }
+
+      return true;
+    });
+  }, [salesDeductionRecords, deductionsDateFilter, deductionsCustomDate, deductionsSearchQuery, todayStr, yesterdayStr, sevenDaysAgoStr]);
+
   // 2. Years available from stock imports
   const availableYears = useMemo(() => {
     const yearsSet = new Set<number>();
@@ -1568,23 +1693,122 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
       {activeSubTab === 'sales_deductions' && (
         <div className="space-y-4">
           <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-            <div className="p-4 bg-slate-50 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="p-4 bg-slate-50 border-b border-slate-200 flex flex-col md:flex-row md:items-center justify-between gap-3">
               <div>
-                <h3 className="font-extrabold text-sm text-slate-800">
-                  Lịch Sử Vật Tư Khấu Trừ Tự Động Theo Đơn Bán Hàng
-                </h3>
-                <p className="text-xs text-slate-500">
-                  Mỗi khi lên đơn in ảnh cho khách, kho tự động khấu trừ gỗ MDF, mica, khung bo viền tương ứng
+                <div className="flex items-center gap-2">
+                  <h3 className="font-extrabold text-sm text-slate-800">
+                    Lịch Sử Vật Tư Khấu Trừ Tự Động Theo Đơn Bán Hàng
+                  </h3>
+                  <span className="px-2 py-0.5 rounded-full text-xs font-bold bg-purple-100 text-purple-800 border border-purple-200">
+                    {filteredDeductionRecords.length} đợt trừ kho
+                  </span>
+                </div>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Kho tự động khấu trừ ván MDF, Fomex và phụ kiện theo ngày phát sinh thực tế. Hàng bổ sung trừ vào đúng ngày bấm bổ sung.
                 </p>
               </div>
               <button
                 type="button"
                 onClick={() => setIsBOMGuideOpen(true)}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 rounded-xl text-xs font-bold transition cursor-pointer self-start sm:self-auto"
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 rounded-xl text-xs font-bold transition cursor-pointer self-start md:self-auto shrink-0"
               >
                 <BookOpen className="w-3.5 h-3.5" />
                 <span>Xem Công Thức Cấu Thành (BOM)</span>
               </button>
+            </div>
+
+            {/* Bộ lọc theo ngày & tìm kiếm đợt xuất kho */}
+            <div className="p-3 bg-white border-b border-slate-200 flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-xs font-bold text-slate-600 flex items-center gap-1 mr-1">
+                  <Filter className="w-3.5 h-3.5 text-purple-600" />
+                  Lọc ngày trừ kho:
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setDeductionsDateFilter('all')}
+                  className={`px-2.5 py-1 text-xs font-semibold rounded-lg transition cursor-pointer ${
+                    deductionsDateFilter === 'all'
+                      ? 'bg-purple-600 text-white font-bold shadow-xs'
+                      : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                  }`}
+                >
+                  Tất cả
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDeductionsDateFilter('today')}
+                  className={`px-2.5 py-1 text-xs font-semibold rounded-lg transition cursor-pointer ${
+                    deductionsDateFilter === 'today'
+                      ? 'bg-purple-600 text-white font-bold shadow-xs'
+                      : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                  }`}
+                >
+                  ⚡ Hôm nay ({formatDateVN(todayStr)})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDeductionsDateFilter('yesterday')}
+                  className={`px-2.5 py-1 text-xs font-semibold rounded-lg transition cursor-pointer ${
+                    deductionsDateFilter === 'yesterday'
+                      ? 'bg-purple-600 text-white font-bold shadow-xs'
+                      : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                  }`}
+                >
+                  Hôm qua
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDeductionsDateFilter('7days')}
+                  className={`px-2.5 py-1 text-xs font-semibold rounded-lg transition cursor-pointer ${
+                    deductionsDateFilter === '7days'
+                      ? 'bg-purple-600 text-white font-bold shadow-xs'
+                      : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                  }`}
+                >
+                  7 ngày qua
+                </button>
+                <div className="flex items-center gap-1">
+                  <input
+                    type="date"
+                    value={deductionsCustomDate}
+                    onChange={(e) => {
+                      setDeductionsCustomDate(e.target.value);
+                      setDeductionsDateFilter('custom');
+                    }}
+                    className={`px-2 py-1 text-xs font-mono rounded-lg border transition ${
+                      deductionsDateFilter === 'custom'
+                        ? 'border-purple-500 bg-purple-50/50 text-purple-900 font-bold'
+                        : 'border-slate-200 bg-slate-50 text-slate-700'
+                    }`}
+                  />
+                  {deductionsDateFilter === 'custom' && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDeductionsDateFilter('all');
+                        setDeductionsCustomDate('');
+                      }}
+                      className="p-1 text-slate-400 hover:text-slate-600 rounded transition"
+                      title="Bỏ chọn ngày"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Tìm kiếm */}
+              <div className="relative w-full sm:w-64">
+                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={deductionsSearchQuery}
+                  onChange={(e) => setDeductionsSearchQuery(e.target.value)}
+                  placeholder="Tìm mã đơn, tên khách, vật tư..."
+                  className="w-full pl-8 pr-3 py-1 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:bg-white focus:border-purple-500 outline-hidden"
+                />
+              </div>
             </div>
 
             <div className="overflow-x-auto">
@@ -1592,70 +1816,98 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
                 <thead>
                   <tr className="bg-slate-100 text-slate-700 font-extrabold border-b border-slate-200">
                     <th className="py-3 px-3 w-12 text-center">STT</th>
-                    <th className="py-3 px-3 w-32">Mã Đơn Hàng</th>
-                    <th className="py-3 px-3 w-28">Ngày Đơn</th>
-                    <th className="py-3 px-3 w-44">Khách Hàng / Studio</th>
-                    <th className="py-3 px-3">Sản Phẩm Đã Bán</th>
-                    <th className="py-3 px-3">Nguyên Vật Tư Kho Đã Trừ</th>
-                    <th className="py-3 px-3 w-28 text-center">Trạng Thái</th>
+                    <th className="py-3 px-3 w-36">Mã Đơn Hàng</th>
+                    <th className="py-3 px-3 w-36 text-center">Ngày Trừ Kho</th>
+                    <th className="py-3 px-3 w-40">Khách Hàng / Studio</th>
+                    <th className="py-3 px-3">Sản Phẩm Đã Bán (Đợt Này)</th>
+                    <th className="py-3 px-3 min-w-[220px]">Nguyên Vật Tư Kho Đã Trừ</th>
+                    <th className="py-3 px-3 w-24 text-center">Trạng Thái</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {orders.filter(o => o.status !== 'cancelled').length === 0 ? (
+                  {filteredDeductionRecords.length === 0 ? (
                     <tr>
                       <td colSpan={7} className="py-12 text-center text-slate-400">
-                        Chưa có đơn hàng nào phát sinh trừ vật tư
+                        {salesDeductionRecords.length === 0
+                          ? 'Chưa có đơn hàng nào phát sinh trừ vật tư'
+                          : 'Không tìm thấy đợt trừ vật tư nào phù hợp với bộ lọc ngày/tìm kiếm'}
                       </td>
                     </tr>
                   ) : (
-                    orders
-                      .filter(o => o.status !== 'cancelled')
-                      .map((ord, idx) => {
-                        return (
-                          <tr key={ord.id} className="hover:bg-slate-50/80 transition">
-                            <td className="py-3 px-3 text-center text-slate-400 font-mono">{idx + 1}</td>
-                            <td className="py-3 px-3 font-mono font-bold text-slate-900">{ord.orderNumber}</td>
-                            <td className="py-3 px-3 font-mono text-slate-600">{formatDateVN(ord.date)}</td>
-                            <td className="py-3 px-3 font-bold text-slate-800">{ord.customerName}</td>
-                            <td className="py-3 px-3">
+                    filteredDeductionRecords.map((rec, idx) => {
+                      return (
+                        <tr
+                          key={rec.id}
+                          className={`transition ${
+                            rec.isSupplement ? 'bg-blue-50/30 hover:bg-blue-50/60' : 'hover:bg-slate-50/80'
+                          }`}
+                        >
+                          <td className="py-3 px-3 text-center text-slate-400 font-mono">{idx + 1}</td>
+                          <td className="py-3 px-3">
+                            <div className="font-mono font-bold text-slate-900">{rec.orderNumber}</div>
+                            {rec.isSupplement ? (
+                              <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 mt-0.5 rounded text-[10px] font-bold bg-blue-100 text-blue-800 border border-blue-200">
+                                ✨ Bổ sung
+                              </span>
+                            ) : (
+                              <span className="text-[10px] text-slate-400">Đơn gốc</span>
+                            )}
+                          </td>
+                          <td className="py-3 px-3 text-center">
+                            <div className="font-mono font-bold text-slate-800 text-[11px]">
+                              {formatDateVN(rec.deductionDate)}
+                            </div>
+                            {rec.deductionDate === todayStr && (
+                              <span className="inline-block mt-0.5 px-1.5 py-0.2 rounded text-[9px] font-black bg-emerald-100 text-emerald-800 border border-emerald-300">
+                                Hôm nay
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-3 px-3 font-bold text-slate-800">{rec.customerName}</td>
+                          <td className="py-3 px-3">
+                            <div className="space-y-1">
+                              {rec.items.map((it, iIdx) => (
+                                <div key={iIdx} className="text-[11px] text-slate-700">
+                                  • {it.quantity}x <strong>{it.productName || it.productCode}</strong> ({it.size || '-'})
+                                </div>
+                              ))}
+                            </div>
+                          </td>
+                          <td className="py-3 px-3">
+                            {rec.deductions.length === 0 ? (
+                              <span className="text-[11px] text-slate-400 italic">Không phát sinh trừ vật tư</span>
+                            ) : (
                               <div className="space-y-1">
-                                {ord.items.map((it, iIdx) => (
-                                  <div key={iIdx} className="text-[11px] text-slate-700">
-                                    • {it.quantity}x <strong>{it.productName}</strong> ({it.size})
+                                {rec.deductions.map((d, dIdx) => (
+                                  <div
+                                    key={dIdx}
+                                    className={`text-[11px] flex items-center justify-between gap-2 px-2 py-0.5 rounded border ${
+                                      rec.isSupplement
+                                        ? 'bg-blue-50 text-blue-950 border-blue-200'
+                                        : 'bg-purple-50 text-purple-950 border-purple-200'
+                                    }`}
+                                  >
+                                    <span className="font-medium">• {d.materialName}:</span>
+                                    <span
+                                      className={`font-mono font-bold ${
+                                        rec.isSupplement ? 'text-blue-700' : 'text-purple-700'
+                                      }`}
+                                    >
+                                      -{d.quantity} {d.unit}
+                                    </span>
                                   </div>
                                 ))}
                               </div>
-                            </td>
-                            <td className="py-3 px-3">
-                              {(() => {
-                                const deductions = (ord.materialsDeducted && ord.materialsDeducted.length > 0)
-                                  ? ord.materialsDeducted
-                                  : createMaterialDeductionRecords(calculateOrderBOM(ord.items, materials, products));
-
-                                if (deductions.length === 0) {
-                                  return <span className="text-[11px] text-slate-400 italic">Không phát sinh trừ vật tư</span>;
-                                }
-
-                                return (
-                                  <div className="space-y-1">
-                                    {deductions.map((d, dIdx) => (
-                                      <div key={dIdx} className="text-[11px] flex items-center justify-between gap-2 bg-purple-50 text-purple-950 border border-purple-200 px-2 py-0.5 rounded">
-                                        <span className="font-medium">• {d.materialName}:</span>
-                                        <span className="font-mono font-bold text-purple-700">-{d.quantity} {d.unit}</span>
-                                      </div>
-                                    ))}
-                                  </div>
-                                );
-                              })()}
-                            </td>
-                            <td className="py-3 px-3 text-center">
-                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-700 border border-slate-200">
-                                {ord.status === 'completed' ? 'Đã in xong' : ord.status === 'delivered' ? 'Đã giao' : ord.status}
-                              </span>
-                            </td>
-                          </tr>
-                        );
-                      })
+                            )}
+                          </td>
+                          <td className="py-3 px-3 text-center">
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-700 border border-slate-200">
+                              {rec.status === 'completed' ? 'Đã in xong' : rec.status === 'delivered' ? 'Đã giao' : rec.status}
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })
                   )}
                 </tbody>
               </table>

@@ -418,8 +418,9 @@ export function getMaterialUsageSummary(
         if (!map[targetId].orderNumbers.includes(order.orderNumber)) {
           map[targetId].orderNumbers.push(order.orderNumber);
         }
-        if (!map[targetId].lastUsedDate || order.date > map[targetId].lastUsedDate!) {
-          map[targetId].lastUsedDate = order.date;
+        const actualDate = ded.date || order.date;
+        if (!map[targetId].lastUsedDate || actualDate > map[targetId].lastUsedDate!) {
+          map[targetId].lastUsedDate = actualDate;
         }
       });
     } else if (order.items && order.items.length > 0) {

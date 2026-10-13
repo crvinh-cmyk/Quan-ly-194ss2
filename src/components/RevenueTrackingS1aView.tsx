@@ -113,21 +113,55 @@ export const RevenueTrackingS1aView: React.FC<RevenueTrackingS1aViewProps> = ({
     const dailyMap: Record<number, { originalTotal: number; ordersCount: number }> = {};
 
     orders.forEach(order => {
-      if (!order.date) return;
       if (order.status === 'cancelled') return;
 
-      const [yStr, mStr, dStr] = order.date.split('-');
-      const y = parseInt(yStr, 10);
-      const m = parseInt(mStr, 10);
-      const d = parseInt(dStr, 10);
+      const items = order.items && order.items.length > 0 ? order.items : [];
+      const orderSubtotal = order.subtotal || 0;
+      const orderDiscount = order.discount || 0;
+      // Tỷ lệ chiết khấu (nếu đơn có giảm giá thì phân bổ theo giá trị từng dòng)
+      const discountRatio = orderSubtotal > 0 ? Math.max(0, orderSubtotal - orderDiscount) / orderSubtotal : 1;
 
-      if (y === selectedYear && m === selectedMonth && d >= 1 && d <= 31) {
-        if (!dailyMap[d]) {
-          dailyMap[d] = { originalTotal: 0, ordersCount: 0 };
+      if (items.length === 0) {
+        if (!order.date) return;
+        const [yStr, mStr, dStr] = order.date.split('-');
+        const y = parseInt(yStr, 10);
+        const m = parseInt(mStr, 10);
+        const d = parseInt(dStr, 10);
+
+        if (y === selectedYear && m === selectedMonth && d >= 1 && d <= 31) {
+          if (!dailyMap[d]) {
+            dailyMap[d] = { originalTotal: 0, ordersCount: 0 };
+          }
+          const orderRev = Math.max(0, orderSubtotal - orderDiscount);
+          dailyMap[d].originalTotal += orderRev;
+          dailyMap[d].ordersCount += 1;
         }
-        const orderRev = Math.max(0, (order.subtotal || 0) - (order.discount || 0));
-        dailyMap[d].originalTotal += orderRev;
-        dailyMap[d].ordersCount += 1;
+      } else {
+        // Tính doanh thu theo ngày thực tế của từng dòng hàng (hàng bổ sung ngày hôm nay sẽ tính vào hôm nay)
+        const recordedDaysForOrder = new Set<number>();
+
+        items.forEach(it => {
+          const itemDate = it.date || order.date;
+          if (!itemDate) return;
+          const [yStr, mStr, dStr] = itemDate.split('-');
+          const y = parseInt(yStr, 10);
+          const m = parseInt(mStr, 10);
+          const d = parseInt(dStr, 10);
+
+          if (y === selectedYear && m === selectedMonth && d >= 1 && d <= 31) {
+            if (!dailyMap[d]) {
+              dailyMap[d] = { originalTotal: 0, ordersCount: 0 };
+            }
+            const itemAmount = (it.amount !== undefined ? it.amount : (it.quantity * (it.price || 0))) || 0;
+            const netItemRev = Math.round(itemAmount * discountRatio);
+            dailyMap[d].originalTotal += netItemRev;
+
+            if (!recordedDaysForOrder.has(d)) {
+              dailyMap[d].ordersCount += 1;
+              recordedDaysForOrder.add(d);
+            }
+          }
+        });
       }
     });
 

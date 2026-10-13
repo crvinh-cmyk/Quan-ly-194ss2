@@ -143,17 +143,41 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
       };
     });
 
-    // Aggregate sales orders
+    // Aggregate sales orders by item date (hàng bổ sung tính theo ngày thực tế bổ sung)
     orders.forEach(o => {
       if (o.status === 'cancelled') return;
-      const d = new Date(o.date);
-      if (d.getFullYear() === selectedYear) {
-        const mIdx = d.getMonth();
-        if (mIdx >= 0 && mIdx < 12) {
-          const rev = o.subtotal - (o.discount || 0);
-          months[mIdx].revenue += rev;
-          months[mIdx].ordersCount += 1;
+      const sub = o.subtotal || 0;
+      const disc = o.discount || 0;
+      const ratio = sub > 0 ? Math.max(0, sub - disc) / sub : 1;
+      const items = o.items && o.items.length > 0 ? o.items : [];
+
+      if (items.length === 0) {
+        const d = new Date(o.date);
+        if (d.getFullYear() === selectedYear) {
+          const mIdx = d.getMonth();
+          if (mIdx >= 0 && mIdx < 12) {
+            months[mIdx].revenue += Math.max(0, sub - disc);
+            months[mIdx].ordersCount += 1;
+          }
         }
+      } else {
+        const countedMonthsForOrder = new Set<number>();
+        items.forEach(it => {
+          const itDate = it.date || o.date;
+          if (!itDate) return;
+          const d = new Date(itDate);
+          if (d.getFullYear() === selectedYear) {
+            const mIdx = d.getMonth();
+            if (mIdx >= 0 && mIdx < 12) {
+              const itAmt = (it.amount !== undefined ? it.amount : (it.quantity * (it.price || 0))) || 0;
+              months[mIdx].revenue += Math.round(itAmt * ratio);
+              if (!countedMonthsForOrder.has(mIdx)) {
+                months[mIdx].ordersCount += 1;
+                countedMonthsForOrder.add(mIdx);
+              }
+            }
+          }
+        });
       }
     });
 
@@ -231,13 +255,42 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
       const dayDate = new Date(selectedYear, dailyMonth - 1, dayNum);
       const dayName = dayNames[dayDate.getDay()];
 
-      // Find orders on this day
-      const dayOrders = orders.filter(o => {
-        if (o.status === 'cancelled') return false;
-        return o.date === dateStr;
-      });
+      // Find orders and revenue on this day based on item dates
+      let dayRevenue = 0;
+      const dayOrdersSet = new Set<string>();
+      const dayOrders: Order[] = [];
 
-      const revenue = dayOrders.reduce((sum, o) => sum + (o.subtotal - (o.discount || 0)), 0);
+      orders.forEach(o => {
+        if (o.status === 'cancelled') return;
+        const sub = o.subtotal || 0;
+        const disc = o.discount || 0;
+        const ratio = sub > 0 ? Math.max(0, sub - disc) / sub : 1;
+        const items = o.items && o.items.length > 0 ? o.items : [];
+
+        if (items.length === 0) {
+          if (o.date === dateStr) {
+            dayRevenue += Math.max(0, sub - disc);
+            if (!dayOrdersSet.has(o.id)) {
+              dayOrdersSet.add(o.id);
+              dayOrders.push(o);
+            }
+          }
+        } else {
+          let hasItemOnThisDay = false;
+          items.forEach(it => {
+            const itDate = it.date || o.date;
+            if (itDate === dateStr) {
+              const itAmt = (it.amount !== undefined ? it.amount : (it.quantity * (it.price || 0))) || 0;
+              dayRevenue += Math.round(itAmt * ratio);
+              hasItemOnThisDay = true;
+            }
+          });
+          if (hasItemOnThisDay && !dayOrdersSet.has(o.id)) {
+            dayOrdersSet.add(o.id);
+            dayOrders.push(o);
+          }
+        }
+      });
 
       return {
         day: dayNum,
@@ -247,7 +300,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
         isToday: dateStr === currentRealDayStr,
         ordersCount: dayOrders.length,
         orders: dayOrders,
-        revenue
+        revenue: dayRevenue
       };
     });
 

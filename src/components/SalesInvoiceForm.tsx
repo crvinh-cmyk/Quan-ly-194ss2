@@ -60,6 +60,7 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
   const [editingInvoiceId, setEditingInvoiceId] = useState<string | null>(null);
   const [editingOrderNumber, setEditingOrderNumber] = useState<string>('');
   const [editingOrderCreatedAt, setEditingOrderCreatedAt] = useState<string>('');
+  const isEditMode = !!editingInvoiceId;
 
   // Order general info
   const [orderDate, setOrderDate] = useState<string>(getTodayDateString());
@@ -253,7 +254,7 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
 
       return {
         id: `row-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 5)}`,
-        date: orderDate,
+        date: isEditMode ? getTodayDateString() : orderDate,
         productCode: matchedProd ? matchedProd.code : ci.productCode,
         productName: prodName,
         size: size,
@@ -325,6 +326,7 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
         const unitPrice = product.price;
         next[emptyIdx] = {
           ...cur,
+          date: isEditMode ? getTodayDateString() : (cur.date || orderDate),
           productCode: product.code,
           productName: product.name,
           size: product.size,
@@ -340,7 +342,7 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
         // Append a new row with this product
         const newRow: OrderItem = {
           id: `row-${Date.now()}-${Math.random().toString(36).substring(2, 5)}`,
-          date: orderDate,
+          date: isEditMode ? getTodayDateString() : orderDate,
           productCode: product.code,
           productName: product.name,
           size: product.size,
@@ -397,6 +399,7 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
         const qty = cur.quantity > 0 ? cur.quantity : 1;
         next[emptyIdx] = {
           ...cur,
+          date: isEditMode ? getTodayDateString() : (cur.date || orderDate),
           productCode: product.code,
           productName: product.name,
           size: product.size,
@@ -411,7 +414,7 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
       } else {
         const newRow: OrderItem = {
           id: `row-${Date.now()}-${Math.random().toString(36).substring(2, 5)}`,
-          date: orderDate,
+          date: isEditMode ? getTodayDateString() : orderDate,
           productCode: product.code,
           productName: product.name,
           size: product.size,
@@ -519,9 +522,10 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
 
   // Add new empty row
   const handleAddRow = () => {
+    const today = getTodayDateString();
     const newRow: OrderItem = {
       id: `row-${Date.now()}-${Math.random().toString(36).substring(2, 5)}`,
-      date: orderDate,
+      date: isEditMode ? today : orderDate,
       productCode: '',
       productName: '',
       size: '',
@@ -690,6 +694,7 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
       currentStock: number;
       remainingStock: number;
       isManual?: boolean;
+      date?: string;
     }[] = [];
 
     // 1. Scan valid invoice rows and map to required board (Fomex for 4K/HD Pro, MDF for other photos, NONE for in/inep/album/khung)
@@ -734,7 +739,8 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
             quantity: qty,
             currentStock,
             remainingStock,
-            isManual: false
+            isManual: false,
+            date: row.date || orderDate
           });
           return;
         }
@@ -805,7 +811,8 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
           quantity: qty,
           currentStock,
           remainingStock,
-          isManual: false
+          isManual: false,
+          date: row.date || orderDate
         });
       }
     });
@@ -827,7 +834,8 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
           quantity: extra.quantity,
           currentStock: mat.stockQuantity,
           remainingStock: remaining,
-          isManual: true
+          isManual: true,
+          date: isEditMode ? getTodayDateString() : orderDate
         });
       }
     });
@@ -913,25 +921,28 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
           materialCode: it.materialCode,
           materialName: it.materialName,
           unit: it.unit || 'Tấm',
-          quantity: it.quantity
+          quantity: it.quantity,
+          date: it.date || orderDate
         }))
       : [];
 
-    // Aggregate by materialId so duplicates sum together
+    // Aggregate by materialId AND date so deductions on different dates maintain their actual transaction date!
     const finalDeductions: {
       materialId: string;
       materialCode: string;
       materialName: string;
       unit: string;
       quantity: number;
+      date?: string;
     }[] = [];
 
     mdfDeductions.forEach(item => {
-      const existing = finalDeductions.find(d => d.materialId === item.materialId);
+      const itemDate = item.date || orderDate;
+      const existing = finalDeductions.find(d => d.materialId === item.materialId && (d.date || orderDate) === itemDate);
       if (existing) {
         existing.quantity += item.quantity;
       } else {
-        finalDeductions.push({ ...item });
+        finalDeductions.push({ ...item, date: itemDate });
       }
     });
 
@@ -1109,7 +1120,7 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
                 </span>
               </div>
               <p className="text-xs text-blue-100/90 mt-1">
-                💡 Bạn có thể thêm hàng hóa mới, sửa số lượng hoặc công nợ. Khi bấm <strong className="text-amber-300">"Cập Nhật Hóa Đơn"</strong>, hệ thống sẽ tự động hoàn trả kho cũ và trừ kho mới chính xác vào Firestore.
+                💡 Bạn có thể thêm hàng hóa mới, sửa số lượng hoặc công nợ. Hàng hóa bổ sung sẽ tự động nhận ngày thực tế bổ sung (<strong>hôm nay</strong>), đảm bảo Doanh thu và Xuất kho vật tư ghi nhận đúng ngày thực tế mà không bị lùi về ngày tạo đơn ban đầu!
               </p>
             </div>
           </div>
@@ -1503,12 +1514,23 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
 
                   {/* 1. CỘT NGÀY THÁNG */}
                   <td className="py-2 px-2 text-center">
-                    <input
-                      type="date"
-                      value={row.date || orderDate}
-                      onChange={(e) => handleRowChange(idx, 'date', e.target.value)}
-                      className="w-full px-2 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-slate-700 font-mono text-[11px] focus:bg-white focus:border-amber-500 outline-hidden"
-                    />
+                    <div className="flex flex-col items-center">
+                      <input
+                        type="date"
+                        value={row.date || orderDate}
+                        onChange={(e) => handleRowChange(idx, 'date', e.target.value)}
+                        className={`w-full px-2 py-1.5 border rounded-lg font-mono text-[11px] focus:bg-white focus:border-amber-500 outline-hidden transition ${
+                          isEditMode && row.date && editingOrder?.date && row.date !== editingOrder.date
+                            ? 'bg-blue-50/80 border-blue-300 text-blue-900 font-bold shadow-2xs'
+                            : 'bg-slate-50 border-slate-200 text-slate-700'
+                        }`}
+                      />
+                      {isEditMode && row.date && editingOrder?.date && row.date !== editingOrder.date && (
+                        <span className="text-[9px] font-bold text-blue-700 mt-0.5 whitespace-nowrap">
+                          ✨ Bổ sung
+                        </span>
+                      )}
+                    </div>
                   </td>
 
                   {/* 2. CỘT MÃ SỐ HÀNG (Tự động điền giá, tên hàng, kích thước khi nhập) */}
