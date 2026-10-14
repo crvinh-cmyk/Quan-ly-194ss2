@@ -156,12 +156,14 @@ export interface StockImportItem {
   quantity: number; // Nhập bao nhiêu cái/tấm mỗi loại
   costPrice: number; // Đơn giá nhập
   totalCost: number; // Tổng giá nhập = quantity * costPrice
+  note?: string; // Ghi chú mặt hàng
 }
 
 export interface StockImportReceipt {
   id: string;
   receiptNumber: string; // e.g. 'NK-194-2026-001'
   date: string; // YYYY-MM-DD
+  orderDate?: string; // Ngày lên đơn thực tế
   supplier: string; // Tên nhà cung cấp / Nguồn nhập
   items: StockImportItem[];
   totalAmount: number; // Tổng giá nhập đợt này
@@ -244,6 +246,7 @@ export type BoardCorePriceMap = Record<string, BoardCorePriceRow>;
 export interface AccessoryMaterialItem {
   id: string;               // ID duy nhất (ví dụ: 'acc-1', 'acc-mica-62-03')
   name: string;             // Tên sản phẩm / vật tư phụ kiện
+  unit?: string;            // Đơn vị tính (VD: Cuộn, Mét, Cây, Hộp, Chai, Chiếc, Bộ...)
   price: number;            // Đơn giá (đ)
   updatedAt: string;        // Ngày sửa giá gần nhất (ngày giờ hệ thống)
   category?: string;        // Nhóm phân loại (Mica, Viền, Phào, Keo & Phụ kiện)

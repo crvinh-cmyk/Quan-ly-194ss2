@@ -1,4 +1,5 @@
 import { INK_12_COLORS } from '../data/initialData';
+import { downloadSupplierOrderJPG } from '../utils/exportSupplierOrderCanvas';
 import React, { useState, useMemo, useEffect } from 'react';
 import { Material, MaterialCategory, StockImportReceipt, StockImportItem, Order, OrderItem, MaterialDeduction, Product, InkImportRecord } from '../types';
 import { formatCurrency, formatNumber, formatDateVN } from '../utils/formatters';
@@ -8,7 +9,7 @@ import {
   ArrowDownLeft, FileText, Calendar, DollarSign, PackagePlus,
   Edit, Trash2, SlidersHorizontal, RefreshCw, X, ArrowUpDown, Truck, ChevronRight,
   BookOpen, Sparkles, ShoppingBag, ArrowRight, Building2, Filter, Layers, PieChart,
-  Settings, Check, RotateCcw, Package, Droplet
+  Settings, Check, RotateCcw, Package, Droplet, Camera
 } from 'lucide-react';
 import { MoneyInput } from './MoneyInput';
 import { InkInventoryTracking } from './InkInventoryTracking';
@@ -77,6 +78,30 @@ function renderImportStatusBadge(status?: string) {
   }
 }
 
+
+  // Handler xuất ảnh JPG gửi NCC (Đã ẩn SKU & Giá tiền)
+  const handleExportSupplierJPG = (receiptData: {
+    supplier: string;
+    date: string;
+    orderDate?: string;
+    receiptNumber?: string;
+    notes?: string;
+    items: Array<{ materialName: string; quantity: number; unit: string; note?: string; notes?: string }>;
+  }) => {
+    if (!receiptData.supplier || !receiptData.supplier.trim()) {
+      alert("Vui lòng chọn hoặc nhập tên Nhà Cung Cấp!");
+      return;
+    }
+    if (!receiptData.items || receiptData.items.length === 0) {
+      alert("Vui lòng nhập ít nhất 1 mặt hàng trong phiếu đặt!");
+      return;
+    }
+    downloadSupplierOrderJPG(receiptData).catch(e => {
+      console.error("Error exporting supplier order slip JPG:", e);
+      alert("Có lỗi khi tạo ảnh phiếu đặt hàng gửi NCC.");
+    });
+  };
+
 export const InventoryManagementView: React.FC<InventoryManagementViewProps> = ({
   materials,
   stockImports,
@@ -132,6 +157,7 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
     quantity: number;
     costPrice: number;
     totalCost: number;
+    note?: string;
   }[]>([
     { id: 'ii-0', materialId: '', materialCode: '', materialName: '', unit: 'Tấm', quantity: 1, costPrice: 0, totalCost: 0 }
   ]);
@@ -221,6 +247,7 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
 
   // Manual Inward Form State
   const [importDate, setImportDate] = useState<string>(new Date().toISOString().slice(0, 10));
+  const [importOrderDate, setImportOrderDate] = useState<string>(new Date().toISOString().slice(0, 10));
   const [importSupplier, setImportSupplier] = useState<string>('');
 
   // Dynamically filter SKUs based on selected Supplier (SVP vs Non-SVP)
@@ -818,6 +845,7 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
   const handleOpenManualInward = (presetSupplier?: string) => {
     setEditingImportReceipt(null);
     setImportDate(new Date().toISOString().slice(0, 10));
+    setImportOrderDate(new Date().toISOString().slice(0, 10));
     setImportSupplier(presetSupplier || '');
     setImportStatus('pending');
     setImportNotes('');
@@ -840,6 +868,7 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
   const handleOpenEditImport = (receipt: StockImportReceipt) => {
     setEditingImportReceipt(receipt);
     setImportDate(receipt.date);
+    setImportOrderDate(receipt.orderDate || receipt.date || new Date().toISOString().slice(0, 10));
     setImportSupplier(receipt.supplier);
     setImportStatus(receipt.status || 'pending');
     setImportNotes(receipt.notes || '');
@@ -854,7 +883,8 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
         unit: it.unit || 'Tấm',
         quantity: it.quantity || 1,
         costPrice: it.costPrice || 0,
-        totalCost: it.totalCost || ((it.quantity || 1) * (it.costPrice || 0))
+        totalCost: it.totalCost || ((it.quantity || 1) * (it.costPrice || 0)),
+        note: it.note || ''
       })));
     } else {
       setImportItemsList([
@@ -906,7 +936,8 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
         unit: 'Tấm',
         quantity: 1,
         costPrice: 0,
-        totalCost: 0
+        totalCost: 0,
+        note: ''
       }
     ]);
   };
@@ -916,7 +947,7 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
     setImportItemsList(prev => prev.filter((_, i) => i !== idx));
   };
 
-  const handleUpdateRowField = (idx: number, field: 'quantity' | 'costPrice' | 'materialName' | 'materialCode' | 'unit', val: any) => {
+  const handleUpdateRowField = (idx: number, field: 'quantity' | 'costPrice' | 'materialName' | 'materialCode' | 'unit' | 'note', val: any) => {
     setImportItemsList(prev => {
       const updated = [...prev];
       const cur = { ...updated[idx], [field]: val };
@@ -936,7 +967,8 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
     }
     const updatedReceipt: StockImportReceipt = {
       ...receipt,
-      status: newStatus
+      status: newStatus,
+      orderDate: receipt.orderDate || (newStatus === 'ordered' ? new Date().toISOString().slice(0, 10) : undefined)
     };
     onSaveStockImport(updatedReceipt);
   };
@@ -962,7 +994,8 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
           unit: it.unit.trim() || 'Cái',
           quantity: q,
           costPrice: cp,
-          totalCost: tc
+          totalCost: tc,
+          note: it.note ? it.note.trim() : undefined
         };
       });
 
@@ -980,6 +1013,7 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
       id: receiptId,
       receiptNumber: code,
       date: importDate,
+      orderDate: importOrderDate || importDate,
       supplier: importSupplier.trim(),
       items: validItems,
       totalAmount: totalOrderAmount,
@@ -1822,12 +1856,19 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
                           <div className="font-extrabold text-slate-900 text-sm">{imp.supplier}</div>
                         </td>
                         <td className="py-3 px-3">
-                          <div className="space-y-1">
+                          <div className="space-y-1.5">
                             {imp.items.map((it, iIdx) => (
-                              <div key={iIdx} className="text-slate-800 font-medium">
-                                • <strong>{it.materialName}</strong>
-                                {it.quantity > 1 && (
-                                  <span className="text-slate-500 font-mono ml-1">({it.quantity} {it.unit})</span>
+                              <div key={iIdx} className="text-slate-800 text-xs flex items-center flex-wrap gap-1">
+                                <span className="font-mono text-[10px] font-bold text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200" title={`Mã SKU: ${it.materialCode || it.materialId}`}>
+                                  {it.materialCode || it.materialId || "SKU"}
+                                </span>
+                                <strong className="text-slate-900">{it.materialName}</strong>
+                                <span className="text-slate-600 font-mono font-semibold">({it.quantity} {it.unit})</span>
+                                <span className="text-slate-400 font-mono text-[11px]">@{formatCurrency(it.costPrice)}</span>
+                                {it.note && (
+                                  <span className="text-[10px] text-amber-700 bg-amber-50 px-1 py-0.5 rounded border border-amber-200 italic">
+                                    {it.note}
+                                  </span>
                                 )}
                               </div>
                             ))}
@@ -1859,6 +1900,29 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
                         </td>
                         <td className="py-3 px-3 text-center">
                           <div className="flex items-center justify-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleExportSupplierJPG({
+                                  supplier: imp.supplier,
+                                  date: imp.date,
+                                  orderDate: imp.orderDate || (imp.status === "ordered" || imp.status === "completed" ? imp.date : new Date().toISOString().slice(0, 10)),
+                                  receiptNumber: imp.receiptNumber,
+                                  notes: imp.notes,
+                                  items: imp.items.map(it => ({
+                                    materialName: it.materialName,
+                                    quantity: it.quantity,
+                                    unit: it.unit,
+                                    note: it.note
+                                  }))
+                                });
+                              }}
+                              className="p-1.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-700 transition cursor-pointer"
+                              title="Tải ảnh JPG gửi NCC (Chỉ tên hàng, SL & ghi chú; Ẩn SKU & Giá)"
+                            >
+                              <Camera className="w-3.5 h-3.5" />
+                            </button>
                             <button
                               type="button"
                               onClick={() => handleOpenEditImport(imp)}
@@ -2438,7 +2502,7 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
       {/* MODAL 2: CREATING & EDITING STOCK IMPORT / PURCHASE ORDER */}
       {isNewImportModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-3 bg-slate-950/75 backdrop-blur-xs overflow-y-auto">
-          <div className="bg-white rounded-2xl shadow-2xl max-w-4xl w-full p-5 sm:p-6 border border-slate-200 my-8">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-6xl w-full p-5 sm:p-7 border border-slate-200 my-8">
             {/* Modal Header */}
             <div className="flex items-center justify-between pb-3 border-b border-slate-200 mb-4">
               <div>
@@ -2461,10 +2525,23 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
 
             <form onSubmit={handleSaveManualInwardSubmit} className="space-y-5">
               {/* Order Info & Status */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 bg-slate-50 p-3.5 rounded-xl border border-slate-200">
+              <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 bg-slate-50 p-3.5 rounded-xl border border-slate-200">
                 <div>
                   <label className="block text-xs font-bold text-slate-700 mb-1">
-                    Ngày Nhập Hàng <span className="text-rose-500">*</span>
+                    Ngày Lên Đơn (Gửi NCC) <span className="text-emerald-600">*</span>
+                  </label>
+                  <input
+                    type="date"
+                    required
+                    value={importOrderDate}
+                    onChange={e => setImportOrderDate(e.target.value)}
+                    className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-xl font-bold font-mono text-emerald-800 outline-none focus:border-emerald-500"
+                    title="Thời điểm thực tế chốt đơn gửi NCC (dùng in trên Phiếu gửi NCC)"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    Ngày Nhập Kho <span className="text-rose-500">*</span>
                   </label>
                   <input
                     type="date"
@@ -2596,76 +2673,95 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
                 <div className="border border-slate-200 rounded-xl overflow-hidden bg-white shadow-xs">
                   <table className="w-full text-left text-xs border-collapse">
                     <thead>
-                      <tr className="bg-slate-100 text-slate-700 font-extrabold border-b border-slate-200">
-                        <th className="py-2.5 px-2 w-10 text-center">STT</th>
-                        <th className="py-2.5 px-2 w-52">Mã SKU (Khóa Cố Định)</th>
-                        <th className="py-2.5 px-2">Tên Hàng Hiển Thị (Cho Phép Sửa Tự Do)</th>
-                        <th className="py-2.5 px-2 w-20">ĐVT</th>
-                        <th className="py-2.5 px-2 w-24 text-center">SL Nhập</th>
-                        <th className="py-2.5 px-2 w-32 text-right">Đơn Giá Mới (đ)</th>
-                        <th className="py-2.5 px-2 w-32 text-right">Thành Tiền (đ)</th>
-                        <th className="py-2.5 px-2 w-10 text-center"></th>
+                      <tr className="bg-slate-100/90 text-slate-700 font-bold border-b border-slate-200 text-xs">
+                        <th className="py-2.5 px-2 w-8 text-center">STT</th>
+                        <th className="py-2.5 px-2 w-28">Mã SKU</th>
+                        <th className="py-2.5 px-3 min-w-[280px]">Tên Mặt Hàng / Vật Tư Nhập</th>
+                        <th className="py-2.5 px-2 w-32">Ghi Chú</th>
+                        <th className="py-2.5 px-1.5 w-14 text-center">ĐVT</th>
+                        <th className="py-2.5 px-1.5 w-16 text-center">SL</th>
+                        <th className="py-2.5 px-2 w-28 text-right">Đơn Giá (đ)</th>
+                        <th className="py-2.5 px-2 w-28 text-right">Thành Tiền (đ)</th>
+                        <th className="py-2.5 px-1 w-8 text-center"></th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                       {importItemsList.map((itemRow, idx) => (
                         <tr key={itemRow.id} className="hover:bg-slate-50/80">
                           <td className="py-2 px-2 text-center text-slate-400 font-mono font-bold">{idx + 1}</td>
-                          <td className="py-2 px-2 min-w-[160px]">
+                          <td className="py-2 px-1.5 w-28">
                             <select
                               value={itemRow.materialId || itemRow.materialCode}
                               onChange={e => handleSelectSKUInRow(idx, e.target.value)}
-                              className="w-full px-2 py-1 text-xs bg-slate-50 border border-slate-300 rounded-lg font-mono outline-none focus:bg-white focus:border-amber-500 cursor-pointer"
+                              className="w-full px-1.5 py-1 text-[11px] bg-slate-50 border border-slate-300 rounded-lg font-mono font-bold text-blue-900 outline-none focus:bg-white focus:border-amber-500 cursor-pointer truncate"
+                              title={itemRow.materialCode ? `SKU: ${itemRow.materialCode}` : "-- Chọn SKU --"}
                             >
-                              <option value="">-- Chọn SKU có sẵn --</option>
+                              <option value="">-- Chọn SKU --</option>
                               {filteredSKUsForSupplier.map(sku => (
                                 <option key={sku.id} value={sku.id}>
-                                  [{sku.code}] {sku.name} ({sku.category})
+                                  [{sku.code}] {sku.name}
                                 </option>
                               ))}
                             </select>
+                            {itemRow.materialCode && (
+                              <div className="text-[10px] font-mono text-blue-700 bg-blue-50 px-1 py-0.5 rounded border border-blue-200 mt-0.5 truncate text-center font-bold" title={`Mã SKU: ${itemRow.materialCode}`}>
+                                {itemRow.materialCode}
+                              </div>
+                            )}
                           </td>
-                          <td className="py-2 px-2">
+                          <td className="py-2 px-3 min-w-[280px]">
                             <input
                               type="text"
                               required
                               value={itemRow.materialName}
                               onChange={e => handleUpdateRowField(idx, 'materialName', e.target.value)}
-                              placeholder="Tên vật tư..."
-                              className="w-full px-2 py-1 text-xs bg-slate-50 border border-slate-300 rounded-lg font-bold text-slate-900 outline-none focus:bg-white focus:border-amber-500"
+                              placeholder="Nhập tên mặt hàng / quy cách vật tư..."
+                              className="w-full px-3 py-1.5 text-xs font-bold text-slate-900 bg-white border border-slate-300 rounded-lg outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-400 transition"
                             />
                           </td>
-                          <td className="py-2 px-2">
+                          <td className="py-2 px-1.5 w-36">
+                            <input
+                              type="text"
+                              value={itemRow.note || ""}
+                              onChange={e => handleUpdateRowField(idx, 'note', e.target.value)}
+                              placeholder="Ghi chú dòng..."
+                              className="w-full px-2 py-1 text-[11px] bg-slate-50 border border-slate-200 rounded-lg text-slate-700 outline-none focus:bg-white"
+                            />
+                          </td>
+                          <td className="py-2 px-1 w-16">
                             <input
                               type="text"
                               required
                               value={itemRow.unit}
                               onChange={e => handleUpdateRowField(idx, 'unit', e.target.value)}
-                              className="w-full px-2 py-1 text-xs bg-slate-50 border border-slate-300 rounded-lg text-center font-bold outline-none"
+                              className="w-full px-1 py-1 text-xs bg-slate-50 border border-slate-300 rounded-lg text-center font-bold outline-none"
                             />
                           </td>
-                          <td className="py-2 px-2">
+                          <td className="py-2 px-1 w-20">
                             <input
                               type="number"
                               min={1}
                               required
                               value={itemRow.quantity}
                               onChange={e => handleUpdateRowField(idx, 'quantity', Math.max(1, parseInt(e.target.value) || 1))}
-                              className="w-full px-2 py-1 text-xs bg-slate-50 border border-slate-300 rounded-lg text-center font-mono font-bold text-emerald-700 outline-none focus:bg-white"
+                              className="w-full px-1 py-1 text-xs bg-slate-50 border border-slate-300 rounded-lg text-center font-mono font-bold text-emerald-700 outline-none focus:bg-white"
                             />
                           </td>
-                          <td className="py-2 px-2">
+                          <td className="py-2 px-1.5 w-28">
                             <MoneyInput
                               value={itemRow.costPrice}
                               onChange={val => handleUpdateRowField(idx, 'costPrice', val)}
-                              className="w-full px-2 py-1 text-xs bg-slate-50 border border-slate-300 rounded-lg text-right font-mono font-bold text-slate-900 outline-none focus:bg-white"
+                              showQuickAdd={false}
+                              showWords={false}
+                              hideCurrencyTag={true}
+                              className="w-full px-2 py-1.5 text-xs bg-slate-50 border border-slate-300 rounded-lg text-right font-mono font-bold text-slate-900 outline-none focus:bg-white focus:border-amber-500"
                               placeholder="0"
                             />
                           </td>
-                          <td className="py-2 px-2 text-right font-mono font-black text-rose-700 text-xs">
+                          <td className="py-2 px-1 text-right font-mono font-black text-rose-700 text-xs w-28">
                             {formatCurrency(itemRow.totalCost)}
                           </td>
-                          <td className="py-2 px-2 text-center">
+                          <td className="py-2 px-1 text-center w-8">
                             {importItemsList.length > 1 && (
                               <button
                                 type="button"
@@ -2717,6 +2813,29 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
 
               {/* Actions */}
               <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-200">
+                <button
+                  type="button"
+                  onClick={() => {
+                    handleExportSupplierJPG({
+                      supplier: importSupplier,
+                      date: importDate,
+                      orderDate: importOrderDate || new Date().toISOString().slice(0, 10),
+                      receiptNumber: editingImportReceipt ? editingImportReceipt.receiptNumber : `NK-${(importSupplier || "NCC").toUpperCase().slice(0, 3)}-${(importOrderDate || importDate).replace(/-/g, "")}`,
+                      notes: importNotes,
+                      items: importItemsList.map(it => ({
+                        materialName: it.materialName || "Mặt hàng đặt",
+                        quantity: Number(it.quantity) || 1,
+                        unit: it.unit || "Tấm",
+                        note: it.note
+                      }))
+                    });
+                  }}
+                  className="px-3.5 py-2 bg-emerald-100 hover:bg-emerald-200 text-emerald-950 border border-emerald-300 font-extrabold text-xs rounded-xl flex items-center gap-1.5 cursor-pointer shadow-xs transition"
+                  title="Tải ảnh JPG đơn đặt hàng gửi NCC (Chỉ tên hàng, SL & ghi chú; Ẩn SKU & Giá)"
+                >
+                  <Camera className="w-4 h-4 text-emerald-700" />
+                  <span>📷 Tải Phiếu Gửi NCC (JPG)</span>
+                </button>
                 <button
                   type="button"
                   onClick={() => setIsNewImportModalOpen(false)}
@@ -2933,24 +3052,41 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
               )}
 
               <div>
-                <h4 className="font-bold text-slate-800 mb-2 uppercase tracking-wider text-[11px]">Danh Sách Mặt Hàng</h4>
+                <h4 className="font-bold text-slate-800 mb-2 uppercase tracking-wider text-[11px]">Danh Sách Mặt Hàng (Bản Quản Lý Nội Bộ)</h4>
                 <div className="border border-slate-200 rounded-xl overflow-hidden">
                   <table className="w-full text-left text-xs border-collapse">
                     <thead>
                       <tr className="bg-slate-100 text-slate-700 font-bold border-b border-slate-200">
-                        <th className="py-2 px-3">Tên Hàng</th>
-                        <th className="py-2 px-3 text-center">SL</th>
-                        <th className="py-2 px-3 text-right">Đơn Giá</th>
-                        <th className="py-2 px-3 text-right">Thành Tiền</th>
+                        <th className="py-2 px-2 text-center w-8">STT</th>
+                        <th className="py-2 px-2 w-24">Mã SKU</th>
+                        <th className="py-2 px-3">Tên Hàng / Quy Cách</th>
+                        <th className="py-2 px-2 text-center w-20">SL</th>
+                        <th className="py-2 px-3 text-right w-24">Đơn Giá</th>
+                        <th className="py-2 px-3 text-right w-28">Thành Tiền</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                       {selectedReceiptDetail.items.map((it, idx) => (
                         <tr key={idx} className="hover:bg-slate-50">
-                          <td className="py-2.5 px-3 font-semibold text-slate-900">{it.materialName}</td>
-                          <td className="py-2.5 px-3 text-center font-mono">{it.quantity} {it.unit}</td>
-                          <td className="py-2.5 px-3 text-right font-mono text-slate-600">{formatCurrency(it.costPrice)}</td>
-                          <td className="py-2.5 px-3 text-right font-mono font-bold text-slate-900">{formatCurrency(it.totalCost)}</td>
+                          <td className="py-2.5 px-2 text-center text-slate-400 font-mono">{idx + 1}</td>
+                          <td className="py-2.5 px-2">
+                            <span className="font-mono text-[10px] font-extrabold text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200 block text-center truncate" title={`Mã SKU: ${it.materialCode || it.materialId}`}>
+                              {it.materialCode || it.materialId || "SKU"}
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-3">
+                            <div className="font-bold text-slate-900">{it.materialName}</div>
+                            {it.note && <div className="text-[11px] text-amber-700 italic">Ghi chú: {it.note}</div>}
+                          </td>
+                          <td className="py-2.5 px-2 text-center font-mono font-bold text-emerald-800">
+                            {it.quantity} <span className="text-[10px] font-normal text-slate-500">{it.unit}</span>
+                          </td>
+                          <td className="py-2.5 px-3 text-right font-mono text-slate-600">
+                            {formatCurrency(it.costPrice)}
+                          </td>
+                          <td className="py-2.5 px-3 text-right font-mono font-bold text-slate-900">
+                            {formatCurrency(it.totalCost)}
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -2965,6 +3101,29 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
             </div>
 
             <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-200">
+              <button
+                type="button"
+                onClick={() => {
+                  handleExportSupplierJPG({
+                    supplier: selectedReceiptDetail.supplier,
+                    date: selectedReceiptDetail.date,
+                    orderDate: selectedReceiptDetail.orderDate || (selectedReceiptDetail.status === "ordered" || selectedReceiptDetail.status === "completed" ? selectedReceiptDetail.date : new Date().toISOString().slice(0, 10)),
+                    receiptNumber: selectedReceiptDetail.receiptNumber,
+                    notes: selectedReceiptDetail.notes,
+                    items: selectedReceiptDetail.items.map(it => ({
+                      materialName: it.materialName,
+                      quantity: it.quantity,
+                      unit: it.unit,
+                      note: it.note
+                    }))
+                  });
+                }}
+                className="px-3.5 py-2 bg-emerald-100 hover:bg-emerald-200 text-emerald-950 border border-emerald-300 font-extrabold text-xs rounded-xl flex items-center gap-1.5 cursor-pointer shadow-xs transition"
+                title="Tải ảnh JPG gửi Nhà Cung Cấp (Chỉ tên hàng, SL & ghi chú; Ẩn SKU & Giá)"
+              >
+                <Camera className="w-4 h-4 text-emerald-700" />
+                <span>📷 Tải Phiếu Gửi NCC (JPG)</span>
+              </button>
               <button
                 type="button"
                 onClick={() => {

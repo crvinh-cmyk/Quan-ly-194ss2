@@ -36,6 +36,7 @@ export const AccessoryMaterialPriceTable: React.FC<AccessoryMaterialPriceTablePr
   const [isAddingNew, setIsAddingNew] = useState(false);
   const [newName, setNewName] = useState('');
   const [newPrice, setNewPrice] = useState('');
+  const [newUnit, setNewUnit] = useState('');
   const [newCategory, setNewCategory] = useState('Mica');
 
   // Real-time subscription to Firestore
@@ -72,7 +73,7 @@ export const AccessoryMaterialPriceTable: React.FC<AccessoryMaterialPriceTablePr
   };
 
   // Update item price or name
-  const handleItemChange = (id: string, field: 'name' | 'price' | 'category', rawVal: string) => {
+  const handleItemChange = (id: string, field: 'name' | 'price' | 'category' | 'unit', rawVal: string) => {
     const timestamp = getSystemTimestamp();
     const nextItems = items.map(item => {
       if (item.id === id) {
@@ -83,6 +84,8 @@ export const AccessoryMaterialPriceTable: React.FC<AccessoryMaterialPriceTablePr
           return { ...item, name: rawVal, updatedAt: timestamp };
         } else if (field === 'category') {
           return { ...item, category: rawVal, updatedAt: timestamp };
+        } else if (field === 'unit') {
+          return { ...item, unit: rawVal, updatedAt: timestamp };
         }
       }
       return item;
@@ -106,6 +109,7 @@ export const AccessoryMaterialPriceTable: React.FC<AccessoryMaterialPriceTablePr
     const newItem: AccessoryMaterialItem = {
       id: `acc-custom-${Date.now()}`,
       name: cleanName,
+      unit: newUnit.trim() || undefined,
       price: parseNumber(newPrice),
       updatedAt: getSystemTimestamp(),
       category: newCategory || 'Khác'
@@ -118,6 +122,7 @@ export const AccessoryMaterialPriceTable: React.FC<AccessoryMaterialPriceTablePr
 
     setNewName('');
     setNewPrice('');
+    setNewUnit('');
     setIsAddingNew(false);
   };
 
@@ -213,7 +218,7 @@ export const AccessoryMaterialPriceTable: React.FC<AccessoryMaterialPriceTablePr
 
         {/* Modal/Form thêm vật tư phụ kiện mới */}
         {isAddingNew && (
-          <form onSubmit={handleAddNewItem} className="mt-4 pt-4 border-t border-indigo-200/80 grid grid-cols-1 sm:grid-cols-4 gap-3 bg-white p-4 rounded-xl border shadow-sm">
+          <form onSubmit={handleAddNewItem} className="mt-4 pt-4 border-t border-indigo-200/80 grid grid-cols-1 sm:grid-cols-5 gap-3 bg-white p-4 rounded-xl border shadow-sm">
             <div>
               <label className="block text-[11px] font-bold text-slate-700 mb-1">
                 Tên Sản Phẩm / Vật Tư <span className="text-rose-500">*</span>
@@ -245,6 +250,18 @@ export const AccessoryMaterialPriceTable: React.FC<AccessoryMaterialPriceTablePr
               </select>
             </div>
 
+            <div>
+              <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                Đơn Vị Tính
+              </label>
+              <input
+                type="text"
+                value={newUnit}
+                onChange={e => setNewUnit(e.target.value)}
+                placeholder="VD: Cuộn, Cây, Hộp, Mét..."
+                className="w-full px-3 py-1.5 bg-slate-50 border border-slate-300 rounded-lg text-xs focus:bg-white focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-hidden font-medium"
+              />
+            </div>
             <div>
               <label className="block text-[11px] font-bold text-slate-700 mb-1">
                 Đơn Giá (đ)
@@ -320,7 +337,8 @@ export const AccessoryMaterialPriceTable: React.FC<AccessoryMaterialPriceTablePr
                 <th className="py-3 px-3 text-center w-12 bg-slate-200/60">STT</th>
                 <th className="py-3 px-4 min-w-[240px]">Tên Sản Phẩm / Vật Tư Phụ Kiện</th>
                 <th className="py-3 px-3 text-center w-36">Nhóm Vật Tư</th>
-                <th className="py-3 px-4 text-right w-48">Đơn Giá (đ)</th>
+                <th className="py-3 px-3 text-center w-32">Đơn Vị Tính</th>
+                <th className="py-3 px-4 text-right w-44">Đơn Giá (đ)</th>
                 <th className="py-3 px-4 text-center w-48">Ngày Sửa Giá Gần Nhất</th>
                 <th className="py-3 px-3 text-center w-16">Xóa</th>
               </tr>
@@ -328,7 +346,7 @@ export const AccessoryMaterialPriceTable: React.FC<AccessoryMaterialPriceTablePr
             <tbody className="divide-y divide-slate-200 text-xs font-medium">
               {filteredItems.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="py-8 text-center text-slate-400">
+                  <td colSpan={7} className="py-8 text-center text-slate-400">
                     <div className="flex flex-col items-center justify-center gap-2">
                       <AlertCircle className="w-6 h-6 text-slate-300" />
                       <span>Không tìm thấy vật tư phụ kiện phù hợp</span>
@@ -374,6 +392,18 @@ export const AccessoryMaterialPriceTable: React.FC<AccessoryMaterialPriceTablePr
                         <option value="Keo & Phụ kiện">Keo & Phụ kiện</option>
                         <option value="Khác">Khác</option>
                       </select>
+                    </td>
+
+                    {/* Cột: Đơn Vị Tính (Cho phép người dùng tự điền trực tiếp) */}
+                    <td className="py-2.5 px-3 text-center">
+                      <input
+                        type="text"
+                        value={item.unit || ''}
+                        onChange={e => handleItemChange(item.id, 'unit', e.target.value)}
+                        placeholder="Tự điền ĐVT..."
+                        className="w-full max-w-[120px] mx-auto px-2.5 py-1 text-center font-bold text-xs text-slate-800 bg-white border border-slate-200 rounded-lg hover:border-slate-300 focus:border-indigo-500 focus:bg-indigo-50/20 focus:ring-1 focus:ring-indigo-500 outline-hidden transition shadow-2xs"
+                        title="Nhập đơn vị tính cho vật tư này (VD: Cuộn, Cây, Mét, Hộp, Chiếc...)"
+                      />
                     </td>
 
                     {/* Cột 2: Đơn giá (đ) (Cho phép nhập giá tiền thủ công) */}
