@@ -1,6 +1,7 @@
 import {
   collection,
   doc,
+  getDoc,
   setDoc,
   deleteDoc,
   onSnapshot,
@@ -9,7 +10,7 @@ import {
   runTransaction
 } from 'firebase/firestore';
 import { db } from '../firebase/config';
-import { Product, Customer, Order, Material, StockImportReceipt, WorkshopInfo, StudioCombo, ProductCostItem, ProductCostMap, InkImportRecord, InkColorCode, S1aDayOverride, S1aManualEntry, BoardCorePriceRow, BoardCorePriceMap, AccessoryMaterialItem, AccessoryMaterialMap, PaperMaterialItem, PaperMaterialMap } from '../types';
+import { Product, Customer, Order, Material, StockImportReceipt, StockImportItem, WorkshopInfo, StudioCombo, ProductCostItem, ProductCostMap, InkImportRecord, InkColorCode, S1aDayOverride, S1aManualEntry, BoardCorePriceRow, BoardCorePriceMap, AccessoryMaterialItem, AccessoryMaterialMap, PaperMaterialItem, PaperMaterialMap } from '../types';
 import { DEFAULT_WORKSHOP_INFO, DEFAULT_INK_IMPORTS } from '../data/initialData';
 
 // User info interface for tagging created/updated records
@@ -495,14 +496,19 @@ export function subscribePurchases(
     const list: StockImportReceipt[] = [];
     snapshot.forEach(docSnap => {
       const raw = docSnap.data();
+      const recDate = normalizeDateOnly(raw.date);
+      const recStatus = raw.status || (recDate <= '2026-10-03' ? 'completed' : 'pending');
       const receipt: StockImportReceipt = {
         id: docSnap.id,
         receiptNumber: raw.receiptNumber || '',
-        date: normalizeDateOnly(raw.date),
+        date: recDate,
         supplier: raw.supplier || '',
         items: Array.isArray(raw.items) ? raw.items : [],
         totalAmount: Number(raw.totalAmount) || 0,
         paid: Number(raw.paid) || 0,
+        status: recStatus,
+        isSynced: Boolean(raw.isSynced),
+        syncedAt: raw.syncedAt,
         notes: raw.notes || '',
         createdAt: normalizeFirestoreDate(raw.createdAt),
         userId: raw.userId,
@@ -523,89 +529,170 @@ export function subscribePurchases(
 export const subscribeStockImports = subscribePurchases;
 
 
+
+// =================================================================
+// HELPERS FOR INVENTORY & INK DEDUCTION (RULE 1 & RULE 2)
+// =================================================================
+export function findMatchedMaterial(item: StockImportItem, materialsList: Material[] = []): Material | undefined {
+  const id = item.materialId;
+  const code = (item.materialCode || "").toUpperCase().trim();
+
+  // 1. Primary match: Material ID
+  if (id) {
+    const byId = materialsList.find(m => m.id === id);
+    if (byId) return byId;
+  }
+  // 2. Secondary match: SKU Code
+  if (code) {
+    const byCode = materialsList.find(m => m.code && m.code.toUpperCase().trim() === code);
+    if (byCode) return byCode;
+  }
+  // 3. Fallback only if no ID or SKU Code is present
+  if (!id && !code && item.materialName) {
+    const name = item.materialName.toLowerCase().trim();
+    const byExactName = materialsList.find(m => m.name && m.name.toLowerCase().trim() === name);
+    if (byExactName) return byExactName;
+  }
+  return undefined;
+}
+
+export function isMDFOrFomexMaterial(mat?: Material, item?: StockImportItem): boolean {
+  const code = ((mat?.code || "") + " " + (item?.materialCode || "")).toUpperCase();
+  const cat = (mat?.category || "").toLowerCase();
+
+  // Primary check: SKU Code
+  if (code.includes("MDF") || code.includes("FOMEX") || code.includes("VT-GO") || code.includes("VT-FX")) {
+    return true;
+  }
+  // Secondary check: Category
+  if (cat.includes("mdf") || cat.includes("gỗ") || cat.includes("fomex")) {
+    return true;
+  }
+  // Fallback check: Name
+  const name = ((mat?.name || "") + " " + (item?.materialName || "")).toLowerCase();
+  return name.includes("mdf") || name.includes("ván") || name.includes("fomex");
+}
+
+export function isInkMaterial(item: StockImportItem): boolean {
+  const code = (item.materialCode || "").toUpperCase();
+  if (code.includes("MUC") || code.includes("LUCIA") || code.startsWith("MUC-")) {
+    return true;
+  }
+  const name = (item.materialName || "").toLowerCase();
+  return name.includes("mực") || name.includes("lucia");
+}
+
+export function extractInkColorCode(codeStr: string, nameStr: string): InkColorCode {
+  const codeText = (codeStr || "").toUpperCase().trim();
+  const nameText = (nameStr || "").toUpperCase().trim();
+  const colorOrder: InkColorCode[] = ["PGY", "PBK", "MBK", "GY", "PM", "PC", "CO", "C", "M", "Y", "R", "B"];
+
+  // 1. Extract directly from SKU Code first (e.g. MUC-LUCIA-MBK -> MBK)
+  for (const col of colorOrder) {
+    if (codeText.includes("-" + col) || codeText.endsWith(col) || codeText.includes("_" + col)) {
+      return col;
+    }
+  }
+
+  // 2. Extract from display name
+  const text = codeText + " " + nameText;
+  for (const col of colorOrder) {
+    if (text.includes("-" + col) || text.includes(" " + col + " ") || text.endsWith(" " + col) || text.endsWith("-" + col) || text.includes("MỰC " + col) || text.includes("BÌNH " + col)) {
+      return col;
+    }
+  }
+  for (const col of colorOrder) {
+    if (text.includes(col)) {
+      return col;
+    }
+  }
+  return "MBK";
+}
+
 export async function executeStockImportAutoSync(
   receipt: StockImportReceipt,
   materialsList: Material[] = [],
   user?: AuthUserContext | null
 ): Promise<void> {
-  if (receipt.status !== 'completed') {
+  if (receipt.status !== "completed") {
     return;
   }
-  const shouldSyncStock = !receipt.isSynced;
 
-  const nowFormatted = new Date().toLocaleDateString('vi-VN', {
-    day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit'
+  let currentMaterials = materialsList;
+  if (!currentMaterials || currentMaterials.length === 0) {
+    try {
+      const mSnap = await getDocs(collection(db, COLLECTIONS.MATERIALS));
+      currentMaterials = mSnap.docs.map(d => ({ id: d.id, ...d.data() } as Material));
+    } catch (e) {
+      console.error("Error fetching materials for executeStockImportAutoSync:", e);
+    }
+  }
+
+  const shouldSyncStock = !receipt.isSynced;
+  const nowFormatted = new Date().toLocaleDateString("vi-VN", {
+    day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit"
   });
 
   const boardPrices = { ...getLocalBoardCorePrices() };
   let boardPricesChanged = false;
-
   const accItems = [...getLocalAccessoryMaterials()];
   let accItemsChanged = false;
+  const paperItems = [...getLocalPaperMaterials()];
+  let paperItemsChanged = false;
+
+  let hasInkItems = false;
+  const inkColorQuantities: Record<InkColorCode, number> = {
+    PM: 0, R: 0, C: 0, PGY: 0, PBK: 0, MBK: 0,
+    CO: 0, GY: 0, B: 0, Y: 0, M: 0, PC: 0
+  };
+  let totalInkCost = 0;
+  let totalInkQty = 0;
 
   for (const item of (receipt.items || [])) {
-    const code = (item.materialCode || '').toUpperCase().trim();
-    const name = (item.materialName || '').toLowerCase().trim();
+    const code = (item.materialCode || "").toUpperCase().trim();
+    const name = (item.materialName || "").toLowerCase().trim();
     const costPrice = Number(item.costPrice) || 0;
     const qty = Number(item.quantity) || 0;
 
-    // 1. Cộng Tồn Kho (materials) - chỉ cộng khi đơn hàng mới chuyển thành "Hàng đã nhập kho"
-    if (shouldSyncStock) {
-    const matchedMat = materialsList.find(m =>
-      (code && m.code && m.code.toUpperCase().trim() === code) ||
-      m.id === item.materialId ||
-      (name && m.name && m.name.toLowerCase().trim() === name)
-    );
-
-    if (matchedMat) {
-      const updatedMat: Material = {
-        ...matchedMat,
-        stockQuantity: (matchedMat.stockQuantity || 0) + qty,
-        costPrice: costPrice > 0 ? costPrice : matchedMat.costPrice,
-        updatedAt: new Date().toISOString()
-      };
-      await saveMaterialToFirestore(updatedMat, user).catch(console.error);
-    } else if (code || name) {
-      const newMat: Material = {
-        id: item.materialId || `mat-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        code: item.materialCode || `VT-${Date.now()}`,
-        name: item.materialName || 'Vật tư mới',
-        category: name.includes('ván') || name.includes('mdf') || name.includes('gỗ') ? 'Gỗ MDF' :
-                  name.includes('fomex') ? 'Fomex siêu nhẹ' :
-                  name.includes('giấy') ? 'Giấy In Ảnh' :
-                  name.includes('mica') ? 'Mica & Pha Lê' :
-                  name.includes('khung') || name.includes('phào') ? 'Khung Ảnh' :
-                  name.includes('mực') ? 'Mực In' : 'Keo & Màng Lụa',
-        unit: item.unit || 'Cái',
-        costPrice: costPrice,
-        stockQuantity: qty,
-        minStockAlert: 5,
-        supplier: receipt.supplier,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      };
-      await saveMaterialToFirestore(newMat, user).catch(console.error);
-    }
+    // 1. Cộng Tồn Kho (materials) - CHỈ CỘNG VÁN MDF & FOMEX ĐÃ TỒN TẠI
+    if (shouldSyncStock && qty > 0) {
+      const matchedMat = findMatchedMaterial(item, currentMaterials);
+      if (matchedMat && isMDFOrFomexMaterial(matchedMat, item)) {
+        const updatedMat: Material = {
+          ...matchedMat,
+          stockQuantity: (Number(matchedMat.stockQuantity) || 0) + qty,
+          costPrice: costPrice > 0 ? costPrice : matchedMat.costPrice,
+          updatedAt: new Date().toISOString()
+        };
+        await saveMaterialToFirestore(updatedMat, user).catch(console.error);
+      }
     }
 
-    // 2. Cập nhật Bảng Giá Cốt Vật Tư (BoardCorePrices)
+    // 2. Theo dõi mực in (12 màu Lucia Pro)
+    if (isInkMaterial(item) && qty > 0) {
+      hasInkItems = true;
+      const colorCode = extractInkColorCode(item.materialCode || "", item.materialName || "");
+      inkColorQuantities[colorCode] = (inkColorQuantities[colorCode] || 0) + qty;
+      totalInkQty += qty;
+      totalInkCost += (item.totalCost || (costPrice * qty));
+    }
+
+    // 3. Cập nhật Bảng Giá Cốt Vật Tư (BoardCorePrices)
     if (costPrice > 0 && boardPrices) {
       Object.keys(boardPrices).forEach(sizeKey => {
         const row = boardPrices[sizeKey];
-        const rowCode = (row.code || '').toUpperCase().trim();
-        const rowSize = (row.size || '').toUpperCase().trim();
-        const rowName = (row.name || '').toLowerCase().trim();
-
+        const rowCode = (row.code || "").toUpperCase().trim();
+        const rowSize = (row.size || "").toUpperCase().trim();
+        const rowName = (row.name || "").toLowerCase().trim();
         const isMatch = (code && (rowCode === code || rowSize === code)) ||
                         (name && rowName && (rowName.includes(name) || name.includes(rowName))) ||
                         (code && sizeKey.toUpperCase() === code);
-
         if (isMatch) {
           boardPricesChanged = true;
           const updatedRow = { ...row, updatedAt: nowFormatted };
-          if (name.includes('12li') || name.includes('12mm') || code.includes('12LI')) {
+          if (name.includes("12li") || name.includes("12mm") || code.includes("12LI")) {
             updatedRow.mdf12li = costPrice;
-          } else if (name.includes('fomex') || code.includes('FOMEX')) {
+          } else if (name.includes("fomex") || code.includes("FOMEX")) {
             updatedRow.fomex9li = costPrice;
           } else {
             updatedRow.mdf9li = costPrice;
@@ -615,16 +702,14 @@ export async function executeStockImportAutoSync(
       });
     }
 
-    // 3. Cập nhật Bảng Giá Phụ Kiện (AccessoryMaterials)
+    // 4. Cập nhật Bảng Giá Phụ Kiện (AccessoryMaterials)
     if (costPrice > 0 && Array.isArray(accItems)) {
       accItems.forEach((acc, idx) => {
-        const accName = (acc.name || '').toLowerCase().trim();
-        const accId = (acc.id || '').toLowerCase().trim();
-
+        const accName = (acc.name || "").toLowerCase().trim();
+        const accId = (acc.id || "").toLowerCase().trim();
         const isAccMatch = (item.materialId && accId === item.materialId.toLowerCase()) ||
                            (name && accName && (accName.includes(name) || name.includes(accName))) ||
                            (code && acc.id.toUpperCase() === code);
-
         if (isAccMatch) {
           accItemsChanged = true;
           accItems[idx] = {
@@ -635,32 +720,14 @@ export async function executeStockImportAutoSync(
         }
       });
     }
-  }
 
-  if (boardPricesChanged) {
-    await saveBoardCorePricesToFirestore(boardPrices, user).catch(console.error);
-  }
-  if (accItemsChanged) {
-    await saveAccessoryMaterialsToFirestore(accItems, user).catch(console.error);
-  }
-
-  // 4. Cập nhật Bảng Giá Danh Mục Giấy In (PaperMaterials)
-  const paperItems = [...getLocalPaperMaterials()];
-  let paperItemsChanged = false;
-
-  for (const item of (receipt.items || [])) {
-    const code = (item.materialCode || '').toUpperCase().trim();
-    const name = (item.materialName || '').toLowerCase().trim();
-    const costPrice = Number(item.costPrice) || 0;
-
+    // 5. Cập nhật Bảng Giá Danh Mục Giấy In (PaperMaterials)
     if (costPrice > 0 && Array.isArray(paperItems)) {
       paperItems.forEach((paper, idx) => {
-        const pSku = (paper.sku || paper.id || '').toUpperCase().trim();
-        const pName = (paper.name || '').toLowerCase().trim();
-
+        const pSku = (paper.sku || paper.id || "").toUpperCase().trim();
+        const pName = (paper.name || "").toLowerCase().trim();
         const isPaperMatch = (code && (code === pSku || pSku.includes(code) || code.includes(pSku))) ||
                              (name && pName && (pName.includes(name) || name.includes(pName)));
-
         if (isPaperMatch) {
           paperItemsChanged = true;
           paperItems[idx] = {
@@ -674,15 +741,39 @@ export async function executeStockImportAutoSync(
     }
   }
 
+  if (boardPricesChanged) {
+    await saveBoardCorePricesToFirestore(boardPrices, user).catch(console.error);
+  }
+  if (accItemsChanged) {
+    await saveAccessoryMaterialsToFirestore(accItems, user).catch(console.error);
+  }
   if (paperItemsChanged) {
     await savePaperMaterialsToFirestore(paperItems, user).catch(console.error);
   }
 
-  // Đánh dấu đơn hàng đã được cộng tồn kho thành công
-  if (shouldSyncStock) {
-    const docRef = doc(db, COLLECTIONS.PURCHASES, receipt.id);
-    await setDoc(docRef, { isSynced: true, syncedAt: new Date().toISOString() }, { merge: true }).catch(console.error);
+  // 6. Sync Ink Imports record if ink items exist
+  if (shouldSyncStock && hasInkItems && totalInkQty > 0) {
+    const inkRecord: InkImportRecord = {
+      id: `ink-from-receipt-${receipt.id}`,
+      receiptNumber: receipt.receiptNumber || receipt.id,
+      date: receipt.date,
+      year: new Date(receipt.date).getFullYear(),
+      supplier: receipt.supplier || "SVP",
+      items: inkColorQuantities,
+      totalQuantity: totalInkQty,
+      unit: "Bình",
+      costPricePerBottle: totalInkQty > 0 ? Math.round(totalInkCost / totalInkQty) : 0,
+      totalCost: totalInkCost,
+      notes: `Đồng bộ tự động từ đơn nhập hàng ${receipt.receiptNumber || receipt.id}`,
+      createdAt: receipt.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    await saveInkImportToFirestore(inkRecord, user).catch(console.error);
   }
+
+  // Đánh dấu đơn hàng đã được cộng tồn kho thành công
+  const docRef = doc(db, COLLECTIONS.PURCHASES, receipt.id);
+  await setDoc(docRef, { isSynced: true, syncedAt: new Date().toISOString() }, { merge: true }).catch(console.error);
 }
 
 export async function savePurchaseToFirestore(
@@ -691,25 +782,111 @@ export async function savePurchaseToFirestore(
   materialsList: Material[] = []
 ): Promise<void> {
   const docRef = doc(db, COLLECTIONS.PURCHASES, receipt.id);
-  const status = receipt.status || 'pending';
+  const status = receipt.status || "pending";
+
+  // Revert stock & ink if status changed away from completed after being synced
+  if (status !== "completed" && receipt.isSynced) {
+    let currentMaterials = materialsList;
+    if (!currentMaterials || currentMaterials.length === 0) {
+      try {
+        const mSnap = await getDocs(collection(db, COLLECTIONS.MATERIALS));
+        currentMaterials = mSnap.docs.map(d => ({ id: d.id, ...d.data() } as Material));
+      } catch (e) {
+        console.error("Error fetching materials for status revert:", e);
+      }
+    }
+
+    for (const item of (receipt.items || [])) {
+      const qty = Number(item.quantity) || 0;
+      if (qty > 0) {
+        const matchedMat = findMatchedMaterial(item, currentMaterials);
+        if (matchedMat && isMDFOrFomexMaterial(matchedMat, item)) {
+          const currentStock = Number(matchedMat.stockQuantity) || 0;
+          const newStock = Math.max(0, currentStock - qty);
+          const updatedMat: Material = {
+            ...matchedMat,
+            stockQuantity: newStock,
+            updatedAt: new Date().toISOString()
+          };
+          await saveMaterialToFirestore(updatedMat, user).catch(console.error);
+        }
+      }
+    }
+
+    await deleteInkImportFromFirestore(`ink-from-receipt-${receipt.id}`).catch(console.error);
+    receipt.isSynced = false;
+  }
+
   const enriched = attachUserInfo({
     ...receipt,
     status,
+    isSynced: status === "completed" ? (receipt.isSynced || false) : false,
     date: normalizeDateOnly(receipt.date),
     createdAt: normalizeFirestoreDate(receipt.createdAt)
   }, user);
+
   await setDoc(docRef, cleanFirestoreObject(enriched), { merge: true });
 
-  if (status === 'completed') {
-    await executeStockImportAutoSync(receipt, materialsList, user);
+  if (status === "completed") {
+    await executeStockImportAutoSync(enriched as StockImportReceipt, materialsList, user);
   }
 }
 
-
 export const saveStockImportToFirestore = savePurchaseToFirestore;
 
-export async function deletePurchaseFromFirestore(receiptId: string): Promise<void> {
+export async function deletePurchaseFromFirestore(
+  receiptId: string,
+  materialsList: Material[] = [],
+  user?: AuthUserContext | null,
+  targetReceipt?: StockImportReceipt
+): Promise<void> {
   const docRef = doc(db, COLLECTIONS.PURCHASES, receiptId);
+  let receipt = targetReceipt;
+  if (!receipt) {
+    try {
+      const snap = await getDoc(docRef);
+      if (snap.exists()) {
+        receipt = { id: snap.id, ...snap.data() } as StockImportReceipt;
+      }
+    } catch (e) {
+      console.error("Error reading receipt before deletion:", e);
+    }
+  }
+
+  let currentMaterials = materialsList;
+  if (!currentMaterials || currentMaterials.length === 0) {
+    try {
+      const mSnap = await getDocs(collection(db, COLLECTIONS.MATERIALS));
+      currentMaterials = mSnap.docs.map(d => ({ id: d.id, ...d.data() } as Material));
+    } catch (e) {
+      console.error("Error fetching materials for deletion stock deduction:", e);
+    }
+  }
+
+  // If receipt was completed or synced, deduct item quantities from materials stock & ink in Firestore
+  if (receipt && (receipt.status === "completed" || receipt.isSynced)) {
+    // 1. Deduct MDF & Fomex stock from materials
+    for (const item of (receipt.items || [])) {
+      const qty = Number(item.quantity) || 0;
+      if (qty > 0) {
+        const matchedMat = findMatchedMaterial(item, currentMaterials);
+        if (matchedMat && isMDFOrFomexMaterial(matchedMat, item)) {
+          const currentStock = Number(matchedMat.stockQuantity) || 0;
+          const newStock = Math.max(0, currentStock - qty);
+          const updatedMat: Material = {
+            ...matchedMat,
+            stockQuantity: newStock,
+            updatedAt: new Date().toISOString()
+          };
+          await saveMaterialToFirestore(updatedMat, user).catch(console.error);
+        }
+      }
+    }
+
+    // 2. Delete Ink Import Record
+    await deleteInkImportFromFirestore(`ink-from-receipt-${receipt.id}`).catch(console.error);
+  }
+
   await deleteDoc(docRef);
 }
 

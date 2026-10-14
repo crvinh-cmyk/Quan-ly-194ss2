@@ -247,11 +247,65 @@ export default function App() {
 
   // Stock Inward / Purchase handler: lưu TRỰC TIẾP lên collection 'purchases' trên Firestore
   const handleSaveStockImport = (receipt: StockImportReceipt) => {
+    setStockImports(prev => {
+      const idx = prev.findIndex(r => r.id === receipt.id);
+      if (idx >= 0) {
+        const next = [...prev];
+        next[idx] = receipt;
+        return next;
+      }
+      return [receipt, ...prev];
+    });
     saveStockImportToFirestore(receipt, userContext, materials).catch(console.error);
   };
 
   const handleDeleteStockImport = (receiptId: string) => {
-    deleteStockImportFromFirestore(receiptId).catch(console.error);
+    const target = stockImports.find(r => r.id === receiptId);
+    // Optimistically update stockImports state
+    setStockImports(prev => prev.filter(r => r.id !== receiptId));
+
+    // If receipt was completed or synced, optimistically deduct items from materials stock & ink
+    if (target && (target.status === "completed" || target.isSynced)) {
+      setMaterials(prev => {
+        const updatedList = [...prev];
+        for (const item of (target.items || [])) {
+          const qty = Number(item.quantity) || 0;
+          if (qty > 0) {
+            const code = (item.materialCode || "").toUpperCase().trim();
+            const name = (item.materialName || "").toLowerCase().trim();
+            const idx = updatedList.findIndex(m =>
+              (m.id && m.id === item.materialId) ||
+              (code && m.code && m.code.toUpperCase().trim() === code) ||
+              (name && m.name && m.name.toLowerCase().trim() === name) ||
+              (name && m.name && (m.name.toLowerCase().trim().includes(name) || name.includes(m.name.toLowerCase().trim())))
+            );
+            if (idx >= 0) {
+              const matchedMat = updatedList[idx];
+              const cat = ((matchedMat.category || "") + " " + (item.materialName || "")).toLowerCase();
+              const mName = ((matchedMat.name || "") + " " + (item.materialName || "")).toLowerCase();
+              const mCode = ((matchedMat.code || "") + " " + (item.materialCode || "")).toUpperCase();
+              const isMDFOrFomex = cat.includes("mdf") || cat.includes("gỗ") || cat.includes("fomex") ||
+                                   mName.includes("mdf") || mName.includes("ván") || mName.includes("fomex") ||
+                                   mCode.includes("MDF") || mCode.includes("FOMEX") || mCode.includes("VT-GO") || mCode.includes("VT-FX");
+              if (isMDFOrFomex) {
+                const currentStock = Number(matchedMat.stockQuantity) || 0;
+                updatedList[idx] = {
+                  ...matchedMat,
+                  stockQuantity: Math.max(0, currentStock - qty),
+                  updatedAt: new Date().toISOString()
+                };
+              }
+            }
+          }
+        }
+        return updatedList;
+      });
+
+      // Deduct inkImports optimistically
+      setInkImports(prev => prev.filter(r => r.id !== `ink-from-receipt-${receiptId}` && r.receiptNumber !== (target.receiptNumber || receiptId)));
+    }
+
+    deleteStockImportFromFirestore(receiptId, materials, userContext, target).catch(console.error);
   };
 
   // Ink Import CRUD handlers (Direct Firestore)

@@ -248,7 +248,7 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
           inkAndPaperSKUs.push({
             id: `ink-${c.code}`,
             code: code,
-            name: `Bình Mực Canon Lucia Pro ${c.code} (${c.vietnameseName})`,
+            name: `Mực ${c.code}`,
             unit: 'Bình',
             price: 880000,
             category: 'Mực In 12 Màu (SVP)',
@@ -614,6 +614,14 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
     });
   }, [salesDeductionRecords, deductionsDateFilter, deductionsCustomDate, deductionsSearchQuery, todayStr, yesterdayStr, sevenDaysAgoStr]);
 
+  // Helper function to check if import receipt is completed or legacy history (<= 03/10/2026)
+  const isImportCompletedOrLegacy = (imp: StockImportReceipt): boolean => {
+    if ((imp.date || "") <= "2026-10-03") return true;
+    if (imp.status === "completed" || (imp.status as any) === "Hàng đã nhập kho") return true;
+    if (imp.status === "pending" || imp.status === "ordered" || (imp.status as any) === "Chờ xử lý" || (imp.status as any) === "Đã lên đơn") return false;
+    return true;
+  };
+
   // 2. Years available from stock imports
   const availableYears = useMemo(() => {
     const yearsSet = new Set<number>();
@@ -628,7 +636,10 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
   // Total Inward Value for Current Year (hoặc năm được chọn)
   const currentYearTotalInward = useMemo(() => {
     return stockImports
-      .filter(imp => new Date(imp.date).getFullYear() === currentYear && imp.status !== "pending" && imp.status !== "ordered")
+      .filter(imp => {
+        const y = Number((imp.date || "").slice(0, 4)) || new Date(imp.date).getFullYear();
+        return y === currentYear && isImportCompletedOrLegacy(imp);
+      })
       .reduce((sum, imp) => sum + (imp.totalAmount || 0), 0);
   }, [stockImports, currentYear]);
 
@@ -647,8 +658,8 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
   // 3. Filtered Stock Imports for Selected Year & Supplier
   const filteredStockImportsForExpenseTab = useMemo(() => {
     return stockImports.filter(imp => {
-      if (imp.status === "pending" || imp.status === "ordered") return false;
-      const impYear = new Date(imp.date).getFullYear();
+      if (!isImportCompletedOrLegacy(imp)) return false;
+      const impYear = Number((imp.date || "").slice(0, 4)) || new Date(imp.date).getFullYear();
       if (selectedYear !== 'all' && impYear !== selectedYear) return false;
       if (selectedSupplierFilter !== 'all' && imp.supplier !== selectedSupplierFilter) return false;
 
@@ -673,9 +684,12 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
   // 4. Annual Supplier Summary Aggregation (Tổng cả năm mỗi nhà cung cấp có giá trị bao nhiêu tiền)
   const supplierAnnualSummaries = useMemo(() => {
     // Filter imports by selected year first
-    const yearImports = (selectedYear === 'all'
-      ? stockImports
-      : stockImports.filter(imp => new Date(imp.date).getFullYear() === selectedYear)).filter(imp => imp.status !== "pending" && imp.status !== "ordered");
+    const yearImports = stockImports.filter(imp => {
+      if (!isImportCompletedOrLegacy(imp)) return false;
+      if (selectedYear === "all") return true;
+      const y = Number((imp.date || "").slice(0, 4)) || new Date(imp.date).getFullYear();
+      return y === selectedYear;
+    });
 
     const supplierMap: Record<string, {
       supplierName: string;
@@ -1963,7 +1977,7 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
                             <select
                               value={imp.status || 'pending'}
                               onChange={(e) => handleQuickUpdateStatus(imp, e.target.value as 'pending' | 'ordered' | 'completed')}
-                              className={`px-2.5 py-1 rounded-xl text-xs font-extrabold border outline-none cursor-pointer transition shadow-2xs ${imp.status === 'completed' ? 'bg-emerald-100 text-emerald-950 border-emerald-300 hover:bg-emerald-200' : imp.status === 'ordered' ? 'bg-blue-100 text-blue-950 border-blue-300 hover:bg-blue-200' : 'bg-amber-100 text-amber-950 border-amber-300 hover:bg-amber-200'}`}
+                              className={`px-2.5 py-1 rounded-xl text-xs font-extrabold border outline-none cursor-pointer transition shadow-2xs ${(imp.status === 'completed' || (imp.status as any) === 'Hàng đã nhập kho') ? 'bg-emerald-100 text-emerald-950 border-emerald-300 hover:bg-emerald-200' : (imp.status === 'ordered' || (imp.status as any) === 'Đã lên đơn') ? 'bg-blue-100 text-blue-950 border-blue-300 hover:bg-blue-200' : 'bg-amber-100 text-amber-950 border-amber-300 hover:bg-amber-200'}`}
                               title="Thay đổi trạng thái đơn nhập hàng"
                             >
                               <option value="pending">⏳ Chờ xử lý</option>
@@ -1974,7 +1988,7 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
                         </td>
                         <td className="py-3 px-3 text-center">
                           <div className="flex items-center justify-center gap-1.5 flex-wrap">
-                            {(imp.date || '') > '2026-10-03' && imp.status !== 'completed' && (
+                            {(imp.date || '') > '2026-10-03' && imp.status !== 'completed' && (imp.status as any) !== 'Hàng đã nhập kho' && (
                               <button
                                 type="button"
                                 onClick={(e) => { e.stopPropagation(); handleQuickUpdateStatus(imp, 'completed'); }}
@@ -2584,8 +2598,8 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
                     <thead>
                       <tr className="bg-slate-100 text-slate-700 font-extrabold border-b border-slate-200">
                         <th className="py-2.5 px-2 w-10 text-center">STT</th>
-                        <th className="py-2.5 px-2">Gợi Ý SKU / Mã Vật Tư Kho</th>
-                        <th className="py-2.5 px-2">Tên Vật Tư Nhập</th>
+                        <th className="py-2.5 px-2 w-52">Mã SKU (Khóa Cố Định)</th>
+                        <th className="py-2.5 px-2">Tên Hàng Hiển Thị (Cho Phép Sửa Tự Do)</th>
                         <th className="py-2.5 px-2 w-20">ĐVT</th>
                         <th className="py-2.5 px-2 w-24 text-center">SL Nhập</th>
                         <th className="py-2.5 px-2 w-32 text-right">Đơn Giá Mới (đ)</th>
