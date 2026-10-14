@@ -9,7 +9,7 @@ import {
   runTransaction
 } from 'firebase/firestore';
 import { db } from '../firebase/config';
-import { Product, Customer, Order, Material, StockImportReceipt, WorkshopInfo, StudioCombo, ProductCostItem, ProductCostMap, InkImportRecord, InkColorCode, S1aDayOverride, S1aManualEntry, BoardCorePriceRow, BoardCorePriceMap, AccessoryMaterialItem, AccessoryMaterialMap } from '../types';
+import { Product, Customer, Order, Material, StockImportReceipt, WorkshopInfo, StudioCombo, ProductCostItem, ProductCostMap, InkImportRecord, InkColorCode, S1aDayOverride, S1aManualEntry, BoardCorePriceRow, BoardCorePriceMap, AccessoryMaterialItem, AccessoryMaterialMap, PaperMaterialItem, PaperMaterialMap } from '../types';
 import { DEFAULT_WORKSHOP_INFO, DEFAULT_INK_IMPORTS } from '../data/initialData';
 
 // User info interface for tagging created/updated records
@@ -522,18 +522,189 @@ export function subscribePurchases(
 
 export const subscribeStockImports = subscribePurchases;
 
-export async function savePurchaseToFirestore(
+
+export async function executeStockImportAutoSync(
   receipt: StockImportReceipt,
+  materialsList: Material[] = [],
   user?: AuthUserContext | null
 ): Promise<void> {
+  if (receipt.status !== 'completed') {
+    return;
+  }
+  const shouldSyncStock = !receipt.isSynced;
+
+  const nowFormatted = new Date().toLocaleDateString('vi-VN', {
+    day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit'
+  });
+
+  const boardPrices = { ...getLocalBoardCorePrices() };
+  let boardPricesChanged = false;
+
+  const accItems = [...getLocalAccessoryMaterials()];
+  let accItemsChanged = false;
+
+  for (const item of (receipt.items || [])) {
+    const code = (item.materialCode || '').toUpperCase().trim();
+    const name = (item.materialName || '').toLowerCase().trim();
+    const costPrice = Number(item.costPrice) || 0;
+    const qty = Number(item.quantity) || 0;
+
+    // 1. Cộng Tồn Kho (materials) - chỉ cộng khi đơn hàng mới chuyển thành "Hàng đã nhập kho"
+    if (shouldSyncStock) {
+    const matchedMat = materialsList.find(m =>
+      (code && m.code && m.code.toUpperCase().trim() === code) ||
+      m.id === item.materialId ||
+      (name && m.name && m.name.toLowerCase().trim() === name)
+    );
+
+    if (matchedMat) {
+      const updatedMat: Material = {
+        ...matchedMat,
+        stockQuantity: (matchedMat.stockQuantity || 0) + qty,
+        costPrice: costPrice > 0 ? costPrice : matchedMat.costPrice,
+        updatedAt: new Date().toISOString()
+      };
+      await saveMaterialToFirestore(updatedMat, user).catch(console.error);
+    } else if (code || name) {
+      const newMat: Material = {
+        id: item.materialId || `mat-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        code: item.materialCode || `VT-${Date.now()}`,
+        name: item.materialName || 'Vật tư mới',
+        category: name.includes('ván') || name.includes('mdf') || name.includes('gỗ') ? 'Gỗ MDF' :
+                  name.includes('fomex') ? 'Fomex siêu nhẹ' :
+                  name.includes('giấy') ? 'Giấy In Ảnh' :
+                  name.includes('mica') ? 'Mica & Pha Lê' :
+                  name.includes('khung') || name.includes('phào') ? 'Khung Ảnh' :
+                  name.includes('mực') ? 'Mực In' : 'Keo & Màng Lụa',
+        unit: item.unit || 'Cái',
+        costPrice: costPrice,
+        stockQuantity: qty,
+        minStockAlert: 5,
+        supplier: receipt.supplier,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+      await saveMaterialToFirestore(newMat, user).catch(console.error);
+    }
+    }
+
+    // 2. Cập nhật Bảng Giá Cốt Vật Tư (BoardCorePrices)
+    if (costPrice > 0 && boardPrices) {
+      Object.keys(boardPrices).forEach(sizeKey => {
+        const row = boardPrices[sizeKey];
+        const rowCode = (row.code || '').toUpperCase().trim();
+        const rowSize = (row.size || '').toUpperCase().trim();
+        const rowName = (row.name || '').toLowerCase().trim();
+
+        const isMatch = (code && (rowCode === code || rowSize === code)) ||
+                        (name && rowName && (rowName.includes(name) || name.includes(rowName))) ||
+                        (code && sizeKey.toUpperCase() === code);
+
+        if (isMatch) {
+          boardPricesChanged = true;
+          const updatedRow = { ...row, updatedAt: nowFormatted };
+          if (name.includes('12li') || name.includes('12mm') || code.includes('12LI')) {
+            updatedRow.mdf12li = costPrice;
+          } else if (name.includes('fomex') || code.includes('FOMEX')) {
+            updatedRow.fomex9li = costPrice;
+          } else {
+            updatedRow.mdf9li = costPrice;
+          }
+          boardPrices[sizeKey] = updatedRow;
+        }
+      });
+    }
+
+    // 3. Cập nhật Bảng Giá Phụ Kiện (AccessoryMaterials)
+    if (costPrice > 0 && Array.isArray(accItems)) {
+      accItems.forEach((acc, idx) => {
+        const accName = (acc.name || '').toLowerCase().trim();
+        const accId = (acc.id || '').toLowerCase().trim();
+
+        const isAccMatch = (item.materialId && accId === item.materialId.toLowerCase()) ||
+                           (name && accName && (accName.includes(name) || name.includes(accName))) ||
+                           (code && acc.id.toUpperCase() === code);
+
+        if (isAccMatch) {
+          accItemsChanged = true;
+          accItems[idx] = {
+            ...acc,
+            price: costPrice,
+            updatedAt: nowFormatted
+          };
+        }
+      });
+    }
+  }
+
+  if (boardPricesChanged) {
+    await saveBoardCorePricesToFirestore(boardPrices, user).catch(console.error);
+  }
+  if (accItemsChanged) {
+    await saveAccessoryMaterialsToFirestore(accItems, user).catch(console.error);
+  }
+
+  // 4. Cập nhật Bảng Giá Danh Mục Giấy In (PaperMaterials)
+  const paperItems = [...getLocalPaperMaterials()];
+  let paperItemsChanged = false;
+
+  for (const item of (receipt.items || [])) {
+    const code = (item.materialCode || '').toUpperCase().trim();
+    const name = (item.materialName || '').toLowerCase().trim();
+    const costPrice = Number(item.costPrice) || 0;
+
+    if (costPrice > 0 && Array.isArray(paperItems)) {
+      paperItems.forEach((paper, idx) => {
+        const pSku = (paper.sku || paper.id || '').toUpperCase().trim();
+        const pName = (paper.name || '').toLowerCase().trim();
+
+        const isPaperMatch = (code && (code === pSku || pSku.includes(code) || code.includes(pSku))) ||
+                             (name && pName && (pName.includes(name) || name.includes(pName)));
+
+        if (isPaperMatch) {
+          paperItemsChanged = true;
+          paperItems[idx] = {
+            ...paper,
+            price: costPrice,
+            updatedAt: nowFormatted,
+            supplier: receipt.supplier || paper.supplier
+          };
+        }
+      });
+    }
+  }
+
+  if (paperItemsChanged) {
+    await savePaperMaterialsToFirestore(paperItems, user).catch(console.error);
+  }
+
+  // Đánh dấu đơn hàng đã được cộng tồn kho thành công
+  if (shouldSyncStock) {
+    const docRef = doc(db, COLLECTIONS.PURCHASES, receipt.id);
+    await setDoc(docRef, { isSynced: true, syncedAt: new Date().toISOString() }, { merge: true }).catch(console.error);
+  }
+}
+
+export async function savePurchaseToFirestore(
+  receipt: StockImportReceipt,
+  user?: AuthUserContext | null,
+  materialsList: Material[] = []
+): Promise<void> {
   const docRef = doc(db, COLLECTIONS.PURCHASES, receipt.id);
+  const status = receipt.status || 'pending';
   const enriched = attachUserInfo({
     ...receipt,
+    status,
     date: normalizeDateOnly(receipt.date),
     createdAt: normalizeFirestoreDate(receipt.createdAt)
   }, user);
   await setDoc(docRef, cleanFirestoreObject(enriched), { merge: true });
+
+  if (status === 'completed') {
+    await executeStockImportAutoSync(receipt, materialsList, user);
+  }
 }
+
 
 export const saveStockImportToFirestore = savePurchaseToFirestore;
 
@@ -1345,3 +1516,97 @@ export async function saveS1aManualEntriesToFirestore(
 
 
 
+
+
+// =================================================================
+// 9.3 DANH MỤC GIẤY IN (GIẤY RC BÓNG & GIẤY PP KHỔ 51->111)
+// =================================================================
+export const DEFAULT_PAPER_MATERIALS: PaperMaterialItem[] = [
+  // GIẤY RC BÓNG
+  { id: 'G-RC-51', sku: 'G-RC-51', name: 'Giấy RC bóng khổ 51', paperType: 'Giấy RC bóng', widthSize: 51, unit: 'Cuộn', price: 612000, updatedAt: '13/10/2026 08:00', supplier: 'SVP' },
+  { id: 'G-RC-61', sku: 'G-RC-61', name: 'Giấy RC bóng khổ 61', paperType: 'Giấy RC bóng', widthSize: 61, unit: 'Cuộn', price: 732000, updatedAt: '13/10/2026 08:00', supplier: 'SVP' },
+  { id: 'G-RC-76', sku: 'G-RC-76', name: 'Giấy RC bóng khổ 76', paperType: 'Giấy RC bóng', widthSize: 76, unit: 'Cuộn', price: 684000, updatedAt: '13/10/2026 08:00', supplier: 'SVP' },
+  { id: 'G-RC-91', sku: 'G-RC-91', name: 'Giấy RC bóng khổ 91', paperType: 'Giấy RC bóng', widthSize: 91, unit: 'Cuộn', price: 822600, updatedAt: '13/10/2026 08:00', supplier: 'SVP' },
+  { id: 'G-RC-111', sku: 'G-RC-111', name: 'Giấy RC bóng khổ 111', paperType: 'Giấy RC bóng', widthSize: 111, unit: 'Cuộn', price: 1006200, updatedAt: '13/10/2026 08:00', supplier: 'SVP' },
+
+  // GIẤY PP
+  { id: 'G-PP-51', sku: 'G-PP-51', name: 'Giấy PP khổ 51', paperType: 'Giấy PP', widthSize: 51, unit: 'Cuộn', price: 0, updatedAt: '13/10/2026 08:00', supplier: 'SVP' },
+  { id: 'G-PP-61', sku: 'G-PP-61', name: 'Giấy PP khổ 61', paperType: 'Giấy PP', widthSize: 61, unit: 'Cuộn', price: 671000, updatedAt: '13/10/2026 08:00', supplier: 'SVP' },
+  { id: 'G-PP-76', sku: 'G-PP-76', name: 'Giấy PP khổ 76', paperType: 'Giấy PP', widthSize: 76, unit: 'Cuộn', price: 836000, updatedAt: '13/10/2026 08:00', supplier: 'SVP' },
+  { id: 'G-PP-91', sku: 'G-PP-91', name: 'Giấy PP khổ 91', paperType: 'Giấy PP', widthSize: 91, unit: 'Cuộn', price: 1005000, updatedAt: '13/10/2026 08:00', supplier: 'SVP' },
+  { id: 'G-PP-111', sku: 'G-PP-111', name: 'Giấy PP khổ 111', paperType: 'Giấy PP', widthSize: 111, unit: 'Cuộn', price: 1229000, updatedAt: '13/10/2026 08:00', supplier: 'SVP' },
+];
+
+const PAPER_MATERIALS_LOCAL_KEY = 'tiem_in_194_paper_materials_v1';
+
+export function getLocalPaperMaterials(): PaperMaterialItem[] {
+  try {
+    const raw = localStorage.getItem(PAPER_MATERIALS_LOCAL_KEY);
+    if (!raw) return DEFAULT_PAPER_MATERIALS;
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      const existingIds = new Set(parsed.map((item: PaperMaterialItem) => item.id || item.sku));
+      const missing = DEFAULT_PAPER_MATERIALS.filter(item => !existingIds.has(item.id));
+      return [...parsed, ...missing];
+    }
+    return DEFAULT_PAPER_MATERIALS;
+  } catch (e) {
+    return DEFAULT_PAPER_MATERIALS;
+  }
+}
+
+export function saveLocalPaperMaterials(items: PaperMaterialItem[]): void {
+  try {
+    localStorage.setItem(PAPER_MATERIALS_LOCAL_KEY, JSON.stringify(items));
+  } catch (e) {
+    console.error('Error saving local paper materials:', e);
+  }
+}
+
+export function subscribePaperMaterials(
+  onData: (items: PaperMaterialItem[]) => void,
+  onError?: (err: Error) => void
+) {
+  const docRef = doc(db, COLLECTIONS.SETTINGS, 'paper_materials');
+  return onSnapshot(docRef, { includeMetadataChanges: false }, (snapshot) => {
+    if (snapshot.exists()) {
+      const raw = snapshot.data();
+      const items: PaperMaterialItem[] = Array.isArray(raw.items) ? raw.items : [];
+      if (items.length > 0) {
+        const existingIds = new Set(items.map((i: PaperMaterialItem) => i.id || i.sku));
+        const missing = DEFAULT_PAPER_MATERIALS.filter(i => !existingIds.has(i.id));
+        const merged = [...items, ...missing];
+        saveLocalPaperMaterials(merged);
+        onData(merged);
+      } else {
+        const initial = getLocalPaperMaterials();
+        onData(initial);
+      }
+    } else {
+      const initial = getLocalPaperMaterials();
+      onData(initial);
+    }
+  }, (error) => {
+    console.error('Firestore paper_materials onSnapshot error:', error);
+    onData(getLocalPaperMaterials());
+    if (onError) onError(error);
+  });
+}
+
+export async function savePaperMaterialsToFirestore(
+  items: PaperMaterialItem[],
+  user?: AuthUserContext | null
+): Promise<void> {
+  saveLocalPaperMaterials(items);
+  try {
+    const docRef = doc(db, COLLECTIONS.SETTINGS, 'paper_materials');
+    const payload = {
+      items,
+      updatedAt: new Date().toISOString()
+    };
+    const enriched = attachUserInfo(payload, user);
+    await setDoc(docRef, cleanFirestoreObject(enriched), { merge: true });
+  } catch (e) {
+    console.error('Error saving paper materials to Firestore:', e);
+  }
+}

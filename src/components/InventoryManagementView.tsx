@@ -1,9 +1,10 @@
+import { INK_12_COLORS } from '../data/initialData';
 import React, { useState, useMemo, useEffect } from 'react';
 import { Material, MaterialCategory, StockImportReceipt, StockImportItem, Order, OrderItem, MaterialDeduction, Product, InkImportRecord } from '../types';
 import { formatCurrency, formatNumber, formatDateVN } from '../utils/formatters';
 import { getMaterialUsageSummary, calculateOrderBOM, createMaterialDeductionRecords } from '../utils/materialBOM';
 import {
-  Boxes, Plus, Search, AlertTriangle, CheckCircle2, TrendingDown,
+  Boxes, Plus, Search, AlertTriangle, CheckCircle2, Clock, TrendingDown,
   ArrowDownLeft, FileText, Calendar, DollarSign, PackagePlus,
   Edit, Trash2, SlidersHorizontal, RefreshCw, X, ArrowUpDown, Truck, ChevronRight,
   BookOpen, Sparkles, ShoppingBag, ArrowRight, Building2, Filter, Layers, PieChart,
@@ -18,7 +19,10 @@ import {
   getLocalInventoryPresets,
   InventoryPresets,
   DEFAULT_PRESET_SUPPLIERS,
-  DEFAULT_PRESET_ITEMS
+  DEFAULT_PRESET_ITEMS,
+  getLocalBoardCorePrices,
+  getLocalAccessoryMaterials,
+  getLocalPaperMaterials
 } from '../services/firestoreService';
 
 // Danh sách gợi ý Nhà Cung Cấp & Mặt Hàng (Khởi tạo mặc định)
@@ -43,6 +47,34 @@ interface InventoryManagementViewProps {
   onClearAllStockImports?: () => void;
   onResetStockToZero?: () => void;
   onReloadDefaultMaterials?: () => void;
+}
+
+
+function renderImportStatusBadge(status?: string) {
+  switch (status) {
+    case 'pending':
+      return (
+        <span className="px-2.5 py-1 rounded-full text-[11px] font-bold bg-amber-100 text-amber-800 border border-amber-300 inline-flex items-center gap-1">
+          <Clock className="w-3 h-3 text-amber-600" />
+          <span>Chờ xử lý</span>
+        </span>
+      );
+    case 'ordered':
+      return (
+        <span className="px-2.5 py-1 rounded-full text-[11px] font-bold bg-blue-100 text-blue-800 border border-blue-300 inline-flex items-center gap-1">
+          <Truck className="w-3 h-3 text-blue-600" />
+          <span>Đã lên đơn</span>
+        </span>
+      );
+    case 'completed':
+    default:
+      return (
+        <span className="px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300 inline-flex items-center gap-1">
+          <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+          <span>Hàng đã nhập kho</span>
+        </span>
+      );
+  }
 }
 
 export const InventoryManagementView: React.FC<InventoryManagementViewProps> = ({
@@ -90,6 +122,159 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
   // Modals for Manual Inward / Stock Import
   const [isNewImportModalOpen, setIsNewImportModalOpen] = useState(false);
   const [editingImportReceipt, setEditingImportReceipt] = useState<StockImportReceipt | null>(null);
+  const [importStatus, setImportStatus] = useState<'pending' | 'ordered' | 'completed'>('pending');
+  const [importItemsList, setImportItemsList] = useState<{
+    id: string;
+    materialId: string;
+    materialCode: string;
+    materialName: string;
+    unit: string;
+    quantity: number;
+    costPrice: number;
+    totalCost: number;
+  }[]>([
+    { id: 'ii-0', materialId: '', materialCode: '', materialName: '', unit: 'Tấm', quantity: 1, costPrice: 0, totalCost: 0 }
+  ]);
+
+  // Combined SKU list from Warehouse Materials, Board Core Prices, and Accessory Prices
+  const availableSKUsList = useMemo(() => {
+    const skus: {
+      id: string;
+      code: string;
+      name: string;
+      unit: string;
+      price: number;
+      category: string;
+      source: 'inventory' | 'board' | 'accessory';
+    }[] = [];
+
+    // 1. Warehouse Materials
+    (materials || []).forEach(m => {
+      skus.push({
+        id: m.id,
+        code: m.code,
+        name: m.name,
+        unit: m.unit || 'Tấm',
+        price: m.costPrice || 0,
+        category: m.category || 'Vật tư kho',
+        source: 'inventory'
+      });
+    });
+
+    // 2. Board Core Prices
+    try {
+      const boardPrices = getLocalBoardCorePrices();
+      Object.entries(boardPrices || {}).forEach(([key, row]) => {
+        const code = row.code || row.size;
+        if (!skus.some(s => s.code.toUpperCase() === code.toUpperCase())) {
+          skus.push({
+            id: `board-${key}`,
+            code: code,
+            name: row.name || `Cốt ván MDF ${row.size}`,
+            unit: 'Tấm',
+            price: row.mdf9li || 0,
+            category: 'Bảng giá Cốt Ván',
+            source: 'board'
+          });
+        }
+      });
+    } catch (e) {}
+
+    // 3. Accessory Prices
+    try {
+      const accItems = getLocalAccessoryMaterials();
+      (accItems || []).forEach(acc => {
+        if (!skus.some(s => s.id === acc.id || s.name.toLowerCase() === acc.name.toLowerCase())) {
+          skus.push({
+            id: acc.id,
+            code: acc.id.toUpperCase(),
+            name: acc.name,
+            unit: 'Cái',
+            price: acc.price || 0,
+            category: acc.category || 'Phụ kiện',
+            source: 'accessory'
+          });
+        }
+      });
+    } catch (e) {}
+
+    // 4. Paper Materials (Giấy RC Bóng & Giấy PP)
+    try {
+      const paperItems = getLocalPaperMaterials();
+      (paperItems || []).forEach(p => {
+        if (!skus.some(s => s.code.toUpperCase() === p.sku.toUpperCase())) {
+          skus.push({
+            id: p.id,
+            code: p.sku,
+            name: p.name,
+            unit: p.unit || 'Cuộn',
+            price: p.price || 0,
+            category: `Giấy In (${p.paperType})`,
+            source: 'inventory'
+          });
+        }
+      });
+    } catch (e) {}
+
+    return skus;
+  }, [materials]);
+
+  // Manual Inward Form State
+  const [importDate, setImportDate] = useState<string>(new Date().toISOString().slice(0, 10));
+  const [importSupplier, setImportSupplier] = useState<string>('');
+
+  // Dynamically filter SKUs based on selected Supplier (SVP vs Non-SVP)
+  const filteredSKUsForSupplier = useMemo(() => {
+    const supplierUpper = (importSupplier || '').trim().toUpperCase();
+    const isSVP = supplierUpper === 'SVP';
+
+    if (isSVP) {
+      // SVP Supplier: ONLY show Paper (Giấy in) and Ink (Mực in) items!
+      const inkAndPaperSKUs = availableSKUsList.filter(s => {
+        const cat = (s.category || '').toLowerCase();
+        const name = (s.name || '').toLowerCase();
+        const code = (s.code || '').toLowerCase();
+
+        const isPaper = cat.includes('giấy') || name.includes('giấy') || code.startsWith('g-rc-') || code.startsWith('g-pp-');
+        const isInk = cat.includes('mực') || name.includes('mực') || name.includes('lucia') || code.includes('muc');
+
+        return isPaper || isInk;
+      });
+
+      // Include the 12 Lucia Pro Ink Bottles if not already listed
+      INK_12_COLORS.forEach(c => {
+        const code = `MUC-LUCIA-${c.code}`;
+        if (!inkAndPaperSKUs.some(s => s.code.toUpperCase() === code.toUpperCase() || s.name.includes(`Bình mực ${c.code}`))) {
+          inkAndPaperSKUs.push({
+            id: `ink-${c.code}`,
+            code: code,
+            name: `Bình Mực Canon Lucia Pro ${c.code} (${c.vietnameseName})`,
+            unit: 'Bình',
+            price: 880000,
+            category: 'Mực In 12 Màu (SVP)',
+            source: 'inventory' as const
+          });
+        }
+      });
+
+      return inkAndPaperSKUs;
+    } else {
+      // Non-SVP Suppliers (Trang Phóng, Ninh Trang, Toản HN, Xuân Trường HN, Tuấn Tú Vinh, Khác...):
+      // ONLY show general warehouse materials (Ván, Fomex, Mica, Phào, Nẹp, Khung, Phụ kiện...)
+      // EXCLUDE Paper and Ink!
+      return availableSKUsList.filter(s => {
+        const cat = (s.category || '').toLowerCase();
+        const name = (s.name || '').toLowerCase();
+        const code = (s.code || '').toLowerCase();
+
+        const isPaper = cat.includes('giấy') || name.includes('giấy') || code.startsWith('g-rc-') || code.startsWith('g-pp-');
+        const isInk = cat.includes('mực') || name.includes('mực') || name.includes('lucia') || code.includes('muc');
+
+        return !isPaper && !isInk;
+      });
+    }
+  }, [importSupplier, availableSKUsList]);
+
   const [selectedReceiptDetail, setSelectedReceiptDetail] = useState<StockImportReceipt | null>(null);
   const [receiptToDelete, setReceiptToDelete] = useState<StockImportReceipt | null>(null);
   const [isClearInventoryModalOpen, setIsClearInventoryModalOpen] = useState(false);
@@ -106,9 +291,7 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
   const [formSupplier, setFormSupplier] = useState('');
   const [formNotes, setFormNotes] = useState('');
 
-  // Manual Inward Form State (Nhập giá trị vật tư thủ công theo đợt & NCC)
-  const [importDate, setImportDate] = useState<string>(new Date().toISOString().slice(0, 10));
-  const [importSupplier, setImportSupplier] = useState<string>('');
+  // Manual Inward Form State
   const [importItemName, setImportItemName] = useState<string>('');
   const [importAmount, setImportAmount] = useState<number>(0);
   const [importQuantity, setImportQuantity] = useState<number>(1);
@@ -616,17 +799,26 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
     setIsAddMaterialModalOpen(false);
   };
 
-  // Open Manual Inward Modal (Nhập giá trị vật tư thủ công theo đợt)
+    // Open Stock Import Modal (Tạo đơn nhập hàng mới)
   const handleOpenManualInward = (presetSupplier?: string) => {
     setEditingImportReceipt(null);
     setImportDate(new Date().toISOString().slice(0, 10));
     setImportSupplier(presetSupplier || '');
-    setImportItemName('');
-    setImportAmount(0);
-    setImportQuantity(1);
-    setImportUnit('Lô');
+    setImportStatus('pending');
     setImportNotes('');
     setImportReceiptCode(`NK-194-${new Date().getFullYear()}-${(stockImports.length + 1).toString().padStart(3, '0')}`);
+    setImportItemsList([
+      {
+        id: `ii-${Date.now()}-0`,
+        materialId: '',
+        materialCode: '',
+        materialName: '',
+        unit: 'Tấm',
+        quantity: 1,
+        costPrice: 0,
+        totalCost: 0
+      }
+    ]);
     setIsNewImportModalOpen(true);
   };
 
@@ -634,54 +826,145 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
     setEditingImportReceipt(receipt);
     setImportDate(receipt.date);
     setImportSupplier(receipt.supplier);
-    const firstItem = receipt.items[0];
-    setImportItemName(receipt.items.map(it => it.materialName).join(', '));
-    setImportAmount(receipt.totalAmount);
-    setImportQuantity(firstItem ? firstItem.quantity : 1);
-    setImportUnit(firstItem ? firstItem.unit : 'Lô');
+    setImportStatus(receipt.status || 'pending');
     setImportNotes(receipt.notes || '');
     setImportReceiptCode(receipt.receiptNumber);
+
+    if (receipt.items && receipt.items.length > 0) {
+      setImportItemsList(receipt.items.map(it => ({
+        id: it.id || `ii-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        materialId: it.materialId || '',
+        materialCode: it.materialCode || '',
+        materialName: it.materialName || '',
+        unit: it.unit || 'Tấm',
+        quantity: it.quantity || 1,
+        costPrice: it.costPrice || 0,
+        totalCost: it.totalCost || ((it.quantity || 1) * (it.costPrice || 0))
+      })));
+    } else {
+      setImportItemsList([
+        {
+          id: `ii-${Date.now()}-0`,
+          materialId: '',
+          materialCode: '',
+          materialName: '',
+          unit: 'Tấm',
+          quantity: 1,
+          costPrice: 0,
+          totalCost: 0
+        }
+      ]);
+    }
     setIsNewImportModalOpen(true);
+  };
+
+  // Helper actions for item list in import modal
+  const handleSelectSKUInRow = (idx: number, skuCodeOrId: string) => {
+    const sku = filteredSKUsForSupplier.find(s => s.id === skuCodeOrId || s.code.toUpperCase() === skuCodeOrId.toUpperCase()) || availableSKUsList.find(s => s.id === skuCodeOrId || s.code.toUpperCase() === skuCodeOrId.toUpperCase());
+    if (!sku) return;
+
+    setImportItemsList(prev => {
+      const updated = [...prev];
+      const q = updated[idx].quantity || 1;
+      const cp = sku.price || updated[idx].costPrice || 0;
+      updated[idx] = {
+        ...updated[idx],
+        materialId: sku.id,
+        materialCode: sku.code,
+        materialName: sku.name,
+        unit: sku.unit || 'Tấm',
+        costPrice: cp,
+        totalCost: q * cp
+      };
+      return updated;
+    });
+  };
+
+  const handleAddItemRow = () => {
+    setImportItemsList(prev => [
+      ...prev,
+      {
+        id: `ii-${Date.now()}-${prev.length}`,
+        materialId: '',
+        materialCode: '',
+        materialName: '',
+        unit: 'Tấm',
+        quantity: 1,
+        costPrice: 0,
+        totalCost: 0
+      }
+    ]);
+  };
+
+  const handleRemoveItemRow = (idx: number) => {
+    if (importItemsList.length <= 1) return;
+    setImportItemsList(prev => prev.filter((_, i) => i !== idx));
+  };
+
+  const handleUpdateRowField = (idx: number, field: 'quantity' | 'costPrice' | 'materialName' | 'materialCode' | 'unit', val: any) => {
+    setImportItemsList(prev => {
+      const updated = [...prev];
+      const cur = { ...updated[idx], [field]: val };
+      const q = Number(cur.quantity) || 0;
+      const cp = Number(cur.costPrice) || 0;
+      cur.totalCost = q * cp;
+      updated[idx] = cur;
+      return updated;
+    });
+  };
+
+  const handleQuickUpdateStatus = (receipt: StockImportReceipt, newStatus: 'pending' | 'ordered' | 'completed') => {
+    const updatedReceipt: StockImportReceipt = {
+      ...receipt,
+      status: newStatus
+    };
+    onSaveStockImport(updatedReceipt);
   };
 
   const handleSaveManualInwardSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!importSupplier.trim()) {
-      alert('Vui lòng nhập tên nhà cung cấp!');
+      alert('Vui lòng chọn hoặc nhập tên nhà cung cấp!');
       return;
     }
-    if (!importItemName.trim()) {
-      alert('Vui lòng nhập tên mặt hàng / vật tư nhập!');
+
+    const validItems: StockImportItem[] = importItemsList
+      .filter(it => it.materialName.trim() || it.materialCode.trim())
+      .map((it, idx) => {
+        const q = Number(it.quantity) || 1;
+        const cp = Number(it.costPrice) || 0;
+        const tc = it.totalCost || (q * cp);
+        return {
+          id: it.id || `ii-${Date.now()}-${idx}`,
+          materialId: it.materialId || `mat-${Date.now()}-${idx}`,
+          materialCode: it.materialCode.trim() || `VT-${Date.now()}`,
+          materialName: it.materialName.trim() || 'Vật tư nhập',
+          unit: it.unit.trim() || 'Cái',
+          quantity: q,
+          costPrice: cp,
+          totalCost: tc
+        };
+      });
+
+    if (validItems.length === 0) {
+      alert('Vui lòng chọn hoặc nhập ít nhất 1 sản phẩm/vật tư nhập!');
       return;
     }
-    if (importAmount <= 0) {
-      alert('Vui lòng nhập giá trị / số tiền đợt nhập!');
-      return;
-    }
+
+    const totalOrderAmount = validItems.reduce((sum, it) => sum + it.totalCost, 0);
 
     const receiptId = editingImportReceipt ? editingImportReceipt.id : `imp-${Date.now()}`;
     const code = importReceiptCode.trim() || `NK-194-${new Date().getFullYear()}-${(stockImports.length + 1).toString().padStart(3, '0')}`;
-
-    // Create item record
-    const singleItem: StockImportItem = {
-      id: editingImportReceipt && editingImportReceipt.items[0] ? editingImportReceipt.items[0].id : `ii-${Date.now()}-0`,
-      materialId: editingImportReceipt && editingImportReceipt.items[0] ? editingImportReceipt.items[0].materialId : `custom-mat-${Date.now()}`,
-      materialCode: 'VT-NHAP',
-      materialName: importItemName.trim(),
-      unit: importUnit.trim() || 'Lô',
-      quantity: Number(importQuantity) || 1,
-      costPrice: importAmount / (Number(importQuantity) || 1),
-      totalCost: importAmount
-    };
 
     const newReceipt: StockImportReceipt = {
       id: receiptId,
       receiptNumber: code,
       date: importDate,
       supplier: importSupplier.trim(),
-      items: [singleItem],
-      totalAmount: importAmount,
-      paid: importAmount,
+      items: validItems,
+      totalAmount: totalOrderAmount,
+      paid: totalOrderAmount,
+      status: importStatus,
       notes: importNotes.trim() || '',
       createdAt: editingImportReceipt ? editingImportReceipt.createdAt : new Date().toISOString()
     };
@@ -959,7 +1242,7 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
           }`}
         >
           <Droplet className="w-4 h-4 text-cyan-600" />
-          <span>Theo Dõi Mực In 12 Màu ({inkImports.length})</span>
+          <span>Theo dõi và quản lý Giấy - Mực in</span>
         </button>
 
         <div className="ml-auto hidden lg:block">
@@ -1398,7 +1681,7 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
                 <tbody className="divide-y divide-slate-100">
                   {supplierAnnualSummaries.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="py-10 text-center text-slate-400">
+                      <td colSpan={8} className="py-10 text-center text-slate-400">
                         Chưa có dữ liệu nhập hàng nào trong {selectedYear === 'all' ? 'hệ thống' : `năm ${selectedYear}`}
                       </td>
                     </tr>
@@ -1498,7 +1781,8 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
                     <th className="py-3 px-4 w-52">Nhà Cung Cấp</th>
                     <th className="py-3 px-3">Mặt Hàng Nhập</th>
                     <th className="py-3 px-4 w-36 text-right">Giá Trị Nhập Đợt Này</th>
-                    <th className="py-3 px-3 w-32 text-center">Thao Tác</th>
+                    <th className="py-3 px-3 w-36 text-center">Trạng Thái</th>
+                    <th className="py-3 px-3 w-28 text-center">Thao Tác</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -1534,6 +1818,17 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
                         </td>
                         <td className="py-3 px-4 text-right font-mono font-black text-rose-700 text-sm">
                           {formatCurrency(imp.totalAmount)}
+                        </td>
+                        <td className="py-3 px-3 text-center">
+                          <select
+                            value={imp.status || 'pending'}
+                            onChange={(e) => handleQuickUpdateStatus(imp, e.target.value as 'pending' | 'ordered' | 'completed')}
+                            className={`px-2 py-1 rounded-xl text-[11px] font-extrabold border outline-none cursor-pointer transition shadow-2xs ${imp.status === 'completed' ? 'bg-emerald-100 text-emerald-950 border-emerald-300' : imp.status === 'ordered' ? 'bg-blue-100 text-blue-950 border-blue-300' : 'bg-amber-100 text-amber-950 border-amber-300'}`}
+                          >
+                            <option value="pending">⏳ Chờ xử lý</option>
+                            <option value="ordered">🚚 Đã lên đơn</option>
+                            <option value="completed">✅ Hàng đã nhập kho</option>
+                          </select>
                         </td>
                         <td className="py-3 px-3 text-center">
                           <div className="flex items-center justify-center gap-1.5">
@@ -1603,13 +1898,14 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
               <table className="w-full text-left text-xs border-collapse">
                 <thead>
                   <tr className="bg-slate-100 text-slate-700 font-extrabold border-b border-slate-200">
-                    <th className="py-3 px-3 w-12 text-center">STT</th>
-                    <th className="py-3 px-3 w-32">Mã Phiếu Nhập</th>
-                    <th className="py-3 px-3 w-28">Ngày Nhập</th>
-                    <th className="py-3 px-3">Nhà Cung Cấp / Nguồn Hàng</th>
+                    <th className="py-3 px-3 w-10 text-center">STT</th>
+                    <th className="py-3 px-3 w-28">Mã Phiếu</th>
+                    <th className="py-3 px-3 w-24">Ngày Nhập</th>
+                    <th className="py-3 px-3 w-40">Nhà Cung Cấp</th>
                     <th className="py-3 px-3">Chi Tiết Mặt Hàng Nhập</th>
-                    <th className="py-3 px-3 w-32 text-right">Tổng Tiền Nhập</th>
-                    <th className="py-3 px-3 w-28 text-center">Thao Tác</th>
+                    <th className="py-3 px-3 w-28 text-right">Tổng Tiền</th>
+                    <th className="py-3 px-3 w-32 text-center">Trạng Thái</th>
+                    <th className="py-3 px-3 w-36 text-center">Thao Tác</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -1645,12 +1941,35 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
                           {formatCurrency(imp.totalAmount)}
                         </td>
                         <td className="py-3 px-3 text-center">
-                          <div className="flex items-center justify-center gap-1">
+                          <select
+                            value={imp.status || 'pending'}
+                            onChange={(e) => handleQuickUpdateStatus(imp, e.target.value as 'pending' | 'ordered' | 'completed')}
+                            className={`px-2.5 py-1 rounded-xl text-xs font-extrabold border outline-none cursor-pointer transition shadow-2xs ${imp.status === 'completed' ? 'bg-emerald-100 text-emerald-950 border-emerald-300 hover:bg-emerald-200' : imp.status === 'ordered' ? 'bg-blue-100 text-blue-950 border-blue-300 hover:bg-blue-200' : 'bg-amber-100 text-amber-950 border-amber-300 hover:bg-amber-200'}`}
+                            title="Thay đổi trạng thái đơn nhập hàng (Chuyển sang Hàng đã nhập kho để cộng kho & đồng bộ giá)"
+                          >
+                            <option value="pending">⏳ Chờ xử lý</option>
+                            <option value="ordered">🚚 Đã lên đơn</option>
+                            <option value="completed">✅ Hàng đã nhập kho</option>
+                          </select>
+                        </td>
+                        <td className="py-3 px-3 text-center">
+                          <div className="flex items-center justify-center gap-1.5 flex-wrap">
+                            {imp.status !== 'completed' && (
+                              <button
+                                type="button"
+                                onClick={() => handleQuickUpdateStatus(imp, 'completed')}
+                                className="px-2 py-1 bg-emerald-100 hover:bg-emerald-200 text-emerald-800 rounded-lg text-[11px] font-bold cursor-pointer transition flex items-center gap-1"
+                                title="Bấm để chuyển trạng thái sang Hàng đã nhập kho, tự động cộng tồn kho & cập nhật giá"
+                              >
+                                <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                                <span>Nhập kho</span>
+                              </button>
+                            )}
                             <button
                               type="button"
                               onClick={() => setSelectedReceiptDetail(imp)}
                               className="px-2 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold cursor-pointer"
-                              title="Xem chi tiết phiếu nhập"
+                              title="Xem chi tiết"
                             >
                               Xem
                             </button>
@@ -1658,7 +1977,7 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
                               type="button"
                               onClick={() => handleOpenEditImport(imp)}
                               className="p-1 rounded-lg bg-slate-100 hover:bg-blue-100 text-blue-600 cursor-pointer transition"
-                              title="Chỉnh sửa phiếu nhập này"
+                              title="Sửa đơn nhập"
                             >
                               <Edit className="w-3.5 h-3.5" />
                             </button>
@@ -1667,7 +1986,7 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
                                 type="button"
                                 onClick={() => setReceiptToDelete(imp)}
                                 className="p-1 rounded-lg bg-slate-100 hover:bg-rose-100 text-rose-600 cursor-pointer transition"
-                                title="Xóa phiếu nhập này"
+                                title="Xóa phiếu"
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
                               </button>
@@ -2082,29 +2401,33 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
         </div>
       )}
 
-      {/* MODAL 2: MANUAL INWARD EXPENSE (Nhập Giá Trị Vật Tư Thủ Công Theo Đợt & NCC) */}
+      {/* MODAL 2: CREATING & EDITING STOCK IMPORT / PURCHASE ORDER */}
       {isNewImportModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-3 bg-slate-950/75 backdrop-blur-xs overflow-y-auto">
-          <div className="bg-white rounded-2xl shadow-2xl max-w-xl w-full p-5 sm:p-6 border border-slate-200">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-4xl w-full p-5 sm:p-6 border border-slate-200 my-8">
+            {/* Modal Header */}
             <div className="flex items-center justify-between pb-3 border-b border-slate-200 mb-4">
               <div>
                 <h3 className="font-black text-lg text-slate-900 flex items-center gap-2">
                   <PackagePlus className="w-5 h-5 text-emerald-600" />
-                  <span>{editingImportReceipt ? 'Chỉnh Sửa Đợt Nhập Hàng' : 'Nhập Giá Trị Vật Tư Vào Hệ Thống'}</span>
+                  <span>{editingImportReceipt ? 'Chỉnh Sửa Đơn Nhập Hàng' : 'Tạo Đơn Nhập Hàng & Đồng Bộ Kho'}</span>
                 </h3>
-                <p className="text-xs text-slate-500">Ghi nhận chi phí mua vật tư thủ công theo từng nhà cung cấp</p>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Quản lý đơn mua vật tư. Khi chọn <strong className="text-emerald-700">"Hàng đã nhập kho"</strong>, hệ thống sẽ tự động cộng tồn kho & cập nhật bảng giá cốt/phụ kiện!
+                </p>
               </div>
               <button
                 type="button"
                 onClick={() => setIsNewImportModalOpen(false)}
-                className="text-slate-400 hover:text-slate-600 p-1"
+                className="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg hover:bg-slate-100 transition cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <form onSubmit={handleSaveManualInwardSubmit} className="space-y-4">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <form onSubmit={handleSaveManualInwardSubmit} className="space-y-5">
+              {/* Order Info & Status */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 bg-slate-50 p-3.5 rounded-xl border border-slate-200">
                 <div>
                   <label className="block text-xs font-bold text-slate-700 mb-1">
                     Ngày Nhập Hàng <span className="text-rose-500">*</span>
@@ -2114,23 +2437,60 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
                     required
                     value={importDate}
                     onChange={e => setImportDate(e.target.value)}
-                    className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-xl font-bold font-mono outline-none"
+                    className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-xl font-bold font-mono outline-none focus:border-amber-500"
                   />
                 </div>
                 <div>
                   <label className="block text-xs font-bold text-slate-700 mb-1">
-                    Mã Phiếu / Số Hóa Đơn
+                    Mã Đơn Nhập / Phiếu
                   </label>
                   <input
                     type="text"
                     value={importReceiptCode}
                     onChange={e => setImportReceiptCode(e.target.value)}
                     placeholder="VD: NK-194-2026-001"
-                    className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-xl font-mono font-bold outline-none"
+                    className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-xl font-mono font-bold outline-none focus:border-amber-500"
                   />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    Trạng Thái Đơn Hàng <span className="text-rose-500">*</span>
+                  </label>
+                  <select
+                    value={importStatus}
+                    onChange={e => setImportStatus(e.target.value as any)}
+                    className="w-full px-3 py-2 text-xs font-bold bg-white border border-slate-300 rounded-xl outline-none focus:border-amber-500 cursor-pointer"
+                  >
+                    <option value="pending">⏳ Chờ xử lý (Lên kế hoạch)</option>
+                    <option value="ordered">🚚 Đã lên đơn (Chờ NCC giao)</option>
+                    <option value="completed">✅ Hàng đã nhập kho (Tự động cộng kho & đồng bộ giá)</option>
+                  </select>
                 </div>
               </div>
 
+              {/* Status Banner */}
+              <div className={`p-3 rounded-xl border text-xs flex items-center justify-between gap-2 ${
+                importStatus === 'completed'
+                  ? 'bg-emerald-50 border-emerald-300 text-emerald-900 font-medium'
+                  : importStatus === 'ordered'
+                  ? 'bg-blue-50 border-blue-300 text-blue-900 font-medium'
+                  : 'bg-amber-50 border-amber-300 text-amber-900 font-medium'
+              }`}>
+                <div className="flex items-center gap-2">
+                  {importStatus === 'completed' && <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />}
+                  {importStatus === 'ordered' && <Truck className="w-4 h-4 text-blue-600 shrink-0" />}
+                  {importStatus === 'pending' && <Clock className="w-4 h-4 text-amber-600 shrink-0" />}
+                  <span>
+                    {importStatus === 'completed'
+                      ? 'Trạng thái "Hàng đã nhập kho": Khi bấm Lưu, tồn kho sẽ tự động cộng dồn & đơn giá mới sẽ đồng bộ vào Bảng Giá Cốt / Phụ Kiện!'
+                      : importStatus === 'ordered'
+                      ? 'Trạng thái "Đã lên đơn": Đơn hàng lưu lại lịch sử, chưa cộng tồn kho cho tới khi chuyển sang "Hàng đã nhập kho".'
+                      : 'Trạng thái "Chờ xử lý": Lưu nháp kế hoạch nhập hàng.'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Supplier Selection */}
               <div>
                 <div className="flex items-center justify-between mb-1">
                   <label className="block text-xs font-bold text-slate-700">
@@ -2140,18 +2500,6 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
                     <span className="text-[11px] text-amber-700 font-medium">
                       {inventoryPresets.suppliers.length} NCC Gợi Ý
                     </span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setManageTab('suppliers');
-                        setIsManageSuggestionsOpen(true);
-                      }}
-                      className="px-2 py-0.5 rounded-lg text-[11px] font-bold text-amber-800 bg-amber-50 hover:bg-amber-100 border border-amber-300 flex items-center gap-1 cursor-pointer transition shadow-2xs"
-                      title="Thêm hoặc sửa danh sách Nhà Cung Cấp gợi ý"
-                    >
-                      <Settings className="w-3 h-3 text-amber-700" />
-                      <span>Sửa gợi ý</span>
-                    </button>
                   </div>
                 </div>
                 <input
@@ -2159,11 +2507,10 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
                   required
                   value={importSupplier}
                   onChange={e => setImportSupplier(e.target.value)}
-                  placeholder="Chọn nhanh gợi ý bên dưới hoặc tự nhập tên NCC..."
-                  className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-300 rounded-xl font-bold text-slate-900 outline-none focus:bg-white focus:border-amber-500 focus:ring-2 focus:ring-amber-200 transition"
+                  placeholder="Chọn gợi ý bên dưới hoặc tự nhập tên NCC..."
+                  className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-300 rounded-xl font-bold text-slate-900 outline-none focus:bg-white focus:border-amber-500 transition"
                 />
-
-                {/* Danh sách các nút chọn nhanh cho Nhà Cung Cấp */}
+                {/* Quick Pick Supplier Chips */}
                 <div className="flex items-center gap-1.5 flex-wrap mt-2">
                   {inventoryPresets.suppliers.map(s => {
                     const isSelected = importSupplier.trim().toLowerCase() === s.toLowerCase();
@@ -2182,126 +2529,159 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
                       </button>
                     );
                   })}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setManageTab('suppliers');
-                      setIsManageSuggestionsOpen(true);
-                    }}
-                    className="px-2.5 py-1 rounded-lg text-xs font-bold text-amber-800 bg-amber-50 hover:bg-amber-100 border border-dashed border-amber-400 transition cursor-pointer flex items-center gap-1"
-                  >
-                    <Plus className="w-3 h-3" />
-                    <span>Thêm NCC</span>
-                  </button>
                 </div>
               </div>
 
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <div className="flex items-center gap-1.5 flex-wrap">
-                    <label className="block text-xs font-bold text-slate-700">
-                      Mặt Hàng / Chủng Loại Vật Tư Nhập <span className="text-rose-500">*</span>
+              {/* Multi-Item Table Section */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <label className="block text-xs font-black text-slate-800 uppercase tracking-wide">
+                      DANH SÁCH SẢN PHẨM / VẬT TƯ NHẬP ({importItemsList.length} mặt hàng)
                     </label>
-                    {parseCurrentImportItems(importItemName).length > 0 && (
-                      <span className="text-[11px] px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 font-bold">
-                        Đã chọn {parseCurrentImportItems(importItemName).length} mặt hàng
-                      </span>
-                    )}
+                    <span className={`px-2.5 py-0.5 rounded-full text-[11px] font-extrabold border ${
+                      (importSupplier || '').trim().toUpperCase() === 'SVP'
+                        ? 'bg-emerald-100 text-emerald-900 border-emerald-300'
+                        : 'bg-amber-100 text-amber-900 border-amber-300'
+                    }`}>
+                      {(importSupplier || '').trim().toUpperCase() === 'SVP'
+                        ? `📦 NCC SVP: Tự động lọc chỉ hiển thị Giấy In & Mực In (${filteredSKUsForSupplier.length} SKU)`
+                        : `📦 NCC ${importSupplier || 'Khác'}: Tự động lọc chỉ hiển thị Ván, Fomex, Mica, Phào, Khung, Phụ kiện (${filteredSKUsForSupplier.length} SKU)`}
+                    </span>
                   </div>
-                  <div className="flex items-center gap-1.5">
-                    {parseCurrentImportItems(importItemName).length > 0 && (
-                      <button
-                        type="button"
-                        onClick={() => setImportItemName('')}
-                        className="text-[11px] text-rose-600 hover:text-rose-700 font-semibold cursor-pointer underline mr-1"
-                      >
-                        Xóa chọn
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setManageTab('items');
-                        setIsManageSuggestionsOpen(true);
-                      }}
-                      className="px-2 py-0.5 rounded-lg text-[11px] font-bold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 flex items-center gap-1 cursor-pointer transition shadow-2xs"
-                      title="Thêm hoặc sửa danh sách Mặt Hàng gợi ý"
-                    >
-                      <Settings className="w-3 h-3 text-emerald-700" />
-                      <span>Sửa gợi ý</span>
-                    </button>
-                  </div>
-                </div>
-                <input
-                  type="text"
-                  required
-                  value={importItemName}
-                  onChange={e => setImportItemName(e.target.value)}
-                  placeholder="Bấm chọn 1 hoặc NHIỀU gợi ý bên dưới, hoặc tự nhập chi tiết..."
-                  className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-300 rounded-xl font-bold text-slate-900 outline-none focus:bg-white focus:border-emerald-500 focus:ring-2 focus:ring-emerald-200 transition"
-                />
-
-                {/* Danh sách các thẻ chọn nhanh cho Mặt Hàng / Chủng Loại Vật Tư (Multi-select) */}
-                <div className="flex items-center gap-1.5 flex-wrap mt-2">
-                  {inventoryPresets.items.map(item => {
-                    const isSelected = isItemChipSelected(item);
-                    return (
-                      <button
-                        key={item}
-                        type="button"
-                        onClick={() => handleToggleItemChip(item)}
-                        className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition cursor-pointer border ${
-                          isSelected
-                            ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs'
-                            : 'bg-slate-100 hover:bg-emerald-100 text-slate-700 hover:text-emerald-950 border-slate-200 active:scale-95'
-                        }`}
-                        title={isSelected ? `Bấm để bỏ chọn ${item}` : `Bấm để thêm ${item} vào ô nhập`}
-                      >
-                        {isSelected ? `✓ ${item}` : `+ ${item}`}
-                      </button>
-                    );
-                  })}
                   <button
                     type="button"
-                    onClick={() => {
-                      setManageTab('items');
-                      setIsManageSuggestionsOpen(true);
-                    }}
-                    className="px-2.5 py-1 rounded-lg text-xs font-bold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-dashed border-emerald-400 transition cursor-pointer flex items-center gap-1"
+                    onClick={handleAddItemRow}
+                    className="px-3 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 rounded-lg text-xs font-bold flex items-center gap-1 cursor-pointer transition"
                   >
-                    <Plus className="w-3 h-3" />
-                    <span>Thêm mặt hàng</span>
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Thêm Dòng Vật Tư</span>
                   </button>
+                </div>
+
+                <div className="border border-slate-200 rounded-xl overflow-hidden bg-white shadow-xs">
+                  <table className="w-full text-left text-xs border-collapse">
+                    <thead>
+                      <tr className="bg-slate-100 text-slate-700 font-extrabold border-b border-slate-200">
+                        <th className="py-2.5 px-2 w-10 text-center">STT</th>
+                        <th className="py-2.5 px-2">Gợi Ý SKU / Mã Vật Tư Kho</th>
+                        <th className="py-2.5 px-2">Tên Vật Tư Nhập</th>
+                        <th className="py-2.5 px-2 w-20">ĐVT</th>
+                        <th className="py-2.5 px-2 w-24 text-center">SL Nhập</th>
+                        <th className="py-2.5 px-2 w-32 text-right">Đơn Giá Mới (đ)</th>
+                        <th className="py-2.5 px-2 w-32 text-right">Thành Tiền (đ)</th>
+                        <th className="py-2.5 px-2 w-10 text-center"></th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {importItemsList.map((itemRow, idx) => (
+                        <tr key={itemRow.id} className="hover:bg-slate-50/80">
+                          <td className="py-2 px-2 text-center text-slate-400 font-mono font-bold">{idx + 1}</td>
+                          <td className="py-2 px-2 min-w-[160px]">
+                            <select
+                              value={itemRow.materialId || itemRow.materialCode}
+                              onChange={e => handleSelectSKUInRow(idx, e.target.value)}
+                              className="w-full px-2 py-1 text-xs bg-slate-50 border border-slate-300 rounded-lg font-mono outline-none focus:bg-white focus:border-amber-500 cursor-pointer"
+                            >
+                              <option value="">-- Chọn SKU có sẵn --</option>
+                              {filteredSKUsForSupplier.map(sku => (
+                                <option key={sku.id} value={sku.id}>
+                                  [{sku.code}] {sku.name} ({sku.category})
+                                </option>
+                              ))}
+                            </select>
+                          </td>
+                          <td className="py-2 px-2">
+                            <input
+                              type="text"
+                              required
+                              value={itemRow.materialName}
+                              onChange={e => handleUpdateRowField(idx, 'materialName', e.target.value)}
+                              placeholder="Tên vật tư..."
+                              className="w-full px-2 py-1 text-xs bg-slate-50 border border-slate-300 rounded-lg font-bold text-slate-900 outline-none focus:bg-white focus:border-amber-500"
+                            />
+                          </td>
+                          <td className="py-2 px-2">
+                            <input
+                              type="text"
+                              required
+                              value={itemRow.unit}
+                              onChange={e => handleUpdateRowField(idx, 'unit', e.target.value)}
+                              className="w-full px-2 py-1 text-xs bg-slate-50 border border-slate-300 rounded-lg text-center font-bold outline-none"
+                            />
+                          </td>
+                          <td className="py-2 px-2">
+                            <input
+                              type="number"
+                              min={1}
+                              required
+                              value={itemRow.quantity}
+                              onChange={e => handleUpdateRowField(idx, 'quantity', Math.max(1, parseInt(e.target.value) || 1))}
+                              className="w-full px-2 py-1 text-xs bg-slate-50 border border-slate-300 rounded-lg text-center font-mono font-bold text-emerald-700 outline-none focus:bg-white"
+                            />
+                          </td>
+                          <td className="py-2 px-2">
+                            <MoneyInput
+                              value={itemRow.costPrice}
+                              onChange={val => handleUpdateRowField(idx, 'costPrice', val)}
+                              className="w-full px-2 py-1 text-xs bg-slate-50 border border-slate-300 rounded-lg text-right font-mono font-bold text-slate-900 outline-none focus:bg-white"
+                              placeholder="0"
+                            />
+                          </td>
+                          <td className="py-2 px-2 text-right font-mono font-black text-rose-700 text-xs">
+                            {formatCurrency(itemRow.totalCost)}
+                          </td>
+                          <td className="py-2 px-2 text-center">
+                            {importItemsList.length > 1 && (
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveItemRow(idx)}
+                                className="p-1 text-slate-400 hover:text-rose-600 rounded-md hover:bg-rose-50 transition cursor-pointer"
+                                title="Xóa dòng này"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
               </div>
 
-              {/* Amount Inward */}
-              <div className="p-4 bg-amber-50/70 border-2 border-amber-300 rounded-2xl space-y-2">
-                <label className="block text-xs font-black text-amber-950 uppercase tracking-wide">
-                  GIÁ TRỊ / TỔNG SỐ TIỀN ĐỢT NHẬP NÀY (VNĐ) <span className="text-rose-600">*</span>
-                </label>
-                <MoneyInput
-                  value={importAmount}
-                  onChange={setImportAmount}
-                  className="w-full px-3.5 py-2.5 text-xl font-black font-mono text-rose-700 bg-white border border-amber-300 rounded-xl shadow-xs outline-none"
-                  placeholder="0 ₫"
-                />
-                <p className="text-[11px] text-slate-600">
-                  Số tiền này sẽ được tự động cộng dồn vào tổng chi phí nhập cả năm của nhà cung cấp <strong>{importSupplier || 'này'}</strong>.
-                </p>
+              {/* Order Amount Summary Bar */}
+              <div className="p-3.5 bg-amber-50/80 border-2 border-amber-300 rounded-2xl flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <span className="text-xs font-bold text-amber-900">Tổng Số Lượng:</span>{' '}
+                  <span className="font-mono font-black text-sm text-slate-900">
+                    {importItemsList.reduce((sum, it) => sum + (Number(it.quantity) || 0), 0)}
+                  </span>{' '}
+                  <span className="text-xs text-slate-500">mặt hàng</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-black uppercase text-amber-950">
+                    TỔNG TIỀN ĐƠN NHẬP (VNĐ):
+                  </span>
+                  <span className="text-xl font-black font-mono text-rose-700">
+                    {formatCurrency(importItemsList.reduce((sum, it) => sum + (it.totalCost || 0), 0))}
+                  </span>
+                </div>
               </div>
 
+              {/* Notes */}
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">Ghi Chú Đợt Nhập</label>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Ghi Chú Đơn Nhập</label>
                 <input
                   type="text"
                   value={importNotes}
                   onChange={e => setImportNotes(e.target.value)}
-                  placeholder="Ghi chú số hóa đơn VAT, hình thức thanh toán chuyển khoản / tiền mặt..."
-                  className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-xl outline-none"
+                  placeholder="Ghi chú hóa đơn VAT, thời gian giao hàng, hình thức thanh toán..."
+                  className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-xl outline-none focus:bg-white focus:border-amber-500"
                 />
               </div>
 
+              {/* Actions */}
               <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-200">
                 <button
                   type="button"
@@ -2312,17 +2692,16 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
                 </button>
                 <button
                   type="submit"
-                  className="px-6 py-2.5 text-xs font-black bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl shadow-lg shadow-emerald-600/20 transition cursor-pointer"
+                  className="px-6 py-2.5 text-xs font-black bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl shadow-lg shadow-emerald-600/20 transition cursor-pointer flex items-center gap-1.5"
                 >
-                  {editingImportReceipt ? 'Cập Nhật Đợt Nhập' : 'Lưu Đợt Nhập Hàng'}
+                  <CheckCircle2 className="w-4 h-4" />
+                  <span>{editingImportReceipt ? 'Cập Nhật Đơn Nhập' : 'Lưu Đơn Nhập Hàng & Đồng Bộ'}</span>
                 </button>
               </div>
             </form>
           </div>
         </div>
-      )}
-
-      {/* MODAL 3: ADJUST / USE STOCK (Xuất dùng / Kiểm kê) */}
+      )}{/* MODAL 3: ADJUST / USE STOCK (Xuất dùng / Kiểm kê) */}
       {isAdjustModalOpen && adjustingMaterial && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-3 bg-slate-950/75 backdrop-blur-xs">
           <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-5 border border-slate-200">

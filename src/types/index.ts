@@ -166,6 +166,9 @@ export interface StockImportReceipt {
   items: StockImportItem[];
   totalAmount: number; // Tổng giá nhập đợt này
   paid: number; // Số tiền đã thanh toán cho nhà cung cấp
+  status?: 'pending' | 'ordered' | 'completed'; // Trạng thái: Chờ xử lý -> Đã lên đơn -> Hàng đã nhập kho
+  isSynced?: boolean; // Đánh dấu đã cộng tồn kho & đồng bộ giá hay chưa
+  syncedAt?: string;
   notes?: string;
   createdAt: string;
   userId?: string;
@@ -247,6 +250,24 @@ export interface AccessoryMaterialItem {
 }
 
 export type AccessoryMaterialMap = Record<string, AccessoryMaterialItem>;
+
+// =================================================================
+// BẢNG GIÁ DANH MỤC GIẤY IN (GIẤY RC BÓNG, GIẤY PP KHỔ 51->111)
+// =================================================================
+export interface PaperMaterialItem {
+  id: string;               // e.g. 'G-RC-51'
+  sku: string;              // e.g. 'G-RC-51'
+  name: string;             // e.g. 'Giấy RC bóng khổ 51'
+  paperType: 'Giấy RC bóng' | 'Giấy PP';
+  widthSize: number;        // 51, 61, 76, 91, 111
+  unit: string;             // 'Cuộn' hoặc 'roll'
+  price: number;            // Đơn giá VNĐ theo cuộn
+  updatedAt: string;        // Ngày sửa giá gần nhất
+  supplier?: string;        // 'SVP' hoặc 'Toản HN'
+}
+
+export type PaperMaterialMap = Record<string, PaperMaterialItem>;
+
 
 // =================================================================
 // ĐỊNH NGHĨA HỆ MỰC IN 12 MÀU CHUYÊN NGHIỆP (CANON LUCIA PRO / IMAGEPROGRAF)

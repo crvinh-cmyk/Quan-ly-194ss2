@@ -94,6 +94,109 @@ export const PDF_STATS_PRODUCT_CODES: string[] = [
  * Bắt đầu từ 13x18, 15x21, 20x30,... và các kích thước lớn hơn.
  * Các kích thước nhỏ hơn 13x18 (như 6x9, 10x15) được sắp xếp phía sau.
  */
+/**
+ * Tìm kiếm hoặc suy luận thông tin sản phẩm từ danh mục sản phẩm.
+ */
+export function resolveProductForCode(code: string, products: Product[] = []) {
+  const cleanCode = code.toUpperCase().trim();
+  // 1. Try exact match in GIÁ STUDIO
+  let matched = products.find(
+    p => p.code.toUpperCase().trim() === cleanCode && p.category === 'GIÁ STUDIO'
+  );
+  // 2. Try exact match in any category
+  if (!matched) {
+    matched = products.find(p => p.code.toUpperCase().trim() === cleanCode);
+  }
+  // 3. Try flexible match (ignore *, x, X, _)
+  if (!matched) {
+    const normInput = cleanCode.replace(/[*xX_\-]/g, '');
+    matched = products.find(p => p.code.toUpperCase().replace(/[*xX_\-]/g, '') === normInput);
+  }
+
+  // 4. Try base product without framing suffixes (K456, K45, K10, K11, TT1, TT2, etc.)
+  let baseMatched: Product | undefined = undefined;
+  if (!matched) {
+    const stripped = cleanCode.replace(/(K456|K45|K10|K11|TT1|TT2)$/i, '');
+    baseMatched = products.find(p => {
+      const pNorm = p.code.toUpperCase().replace(/[*xX_\-]/g, '');
+      const sNorm = stripped.replace(/[*xX_\-]/g, '');
+      return (pNorm === sNorm || p.code.toUpperCase() === stripped) && p.category === 'GIÁ STUDIO';
+    });
+
+    if (!baseMatched) {
+      // Also try HDST prefix for 4KST or HDPROST
+      const hdCode = stripped.replace(/^(4KST|HDPROST)/, 'HDST');
+      baseMatched = products.find(p => {
+        const pNorm = p.code.toUpperCase().replace(/[*xX_\-]/g, '');
+        const sNorm = hdCode.replace(/[*xX_\-]/g, '');
+        return (pNorm === sNorm || p.code.toUpperCase() === hdCode) && p.category === 'GIÁ STUDIO';
+      });
+    }
+  }
+
+  if (matched) {
+    return {
+      matchedProduct: matched,
+      name: matched.name,
+      size: matched.size,
+      fullTitle: `${matched.name} (${matched.size})`,
+      studioPrice: matched.price
+    };
+  }
+
+  if (baseMatched) {
+    return {
+      matchedProduct: baseMatched,
+      name: baseMatched.name,
+      size: baseMatched.size,
+      fullTitle: `${baseMatched.name} (${baseMatched.size})`,
+      studioPrice: baseMatched.price
+    };
+  }
+
+  // Infer name and size if not found in catalog
+  let size = '';
+  const sizeMatch = cleanCode.match(/(\d{2,3})[*xX](\d{2,3})/);
+  if (sizeMatch) {
+    size = `${sizeMatch[1]}*${sizeMatch[2]}`;
+  } else if (cleanCode.includes('6096') || cleanCode.includes('6090')) {
+    size = '60*90';
+  }
+
+  let baseName = 'Ảnh Hoàn Thiện';
+  if (cleanCode.startsWith('LVST')) baseName = 'Ảnh Lụa Viền Bo Viền';
+  else if (cleanCode.startsWith('MKST')) {
+    baseName = cleanCode.includes('K456') ? 'Ảnh Mika Khung K456'
+      : cleanCode.includes('K11') ? 'Ảnh Mika Khung K11'
+      : cleanCode.includes('TT1') ? 'Ảnh Mika Khung Titan 1'
+      : cleanCode.includes('TT2') ? 'Ảnh Mika Khung Titan 2'
+      : 'Ảnh Mika Phổ Thông Bo Viền';
+  } else if (cleanCode.startsWith('HDST')) {
+    baseName = cleanCode.includes('K456') ? 'Ảnh HD Gương Khung K456'
+      : cleanCode.includes('K10') ? 'Ảnh HD Gương Khung K10'
+      : cleanCode.includes('K11') ? 'Ảnh HD Gương Khung K11'
+      : cleanCode.includes('TT1') ? 'Ảnh HD Gương Khung Titan 1'
+      : cleanCode.includes('TT2') ? 'Ảnh HD Gương Khung Titan 2'
+      : 'Ảnh HD Gương Siêu Bóng Bo Viền';
+  } else if (cleanCode.startsWith('4KST')) {
+    baseName = cleanCode.includes('K456') ? 'Ảnh 4K Siêu Nét Khung K456'
+      : cleanCode.includes('TT1') ? 'Ảnh 4K Siêu Nét Khung Titan 1'
+      : cleanCode.includes('TT2') ? 'Ảnh 4K Siêu Nét Khung Titan 2'
+      : 'Ảnh 4K Siêu Nét Bo Viền';
+  } else if (cleanCode.startsWith('HDPROST')) {
+    baseName = cleanCode.includes('K456') || cleanCode.includes('K45') ? 'Ảnh HD Pro Siêu Nét Khung K456'
+      : cleanCode.includes('TT2') ? 'Ảnh HD Pro Siêu Nét Khung Titan 2'
+      : 'Ảnh HD Pro Siêu Nét';
+  }
+
+  return {
+    matchedProduct: undefined,
+    name: baseName,
+    size: size || 'Tiêu chuẩn',
+    fullTitle: `${baseName} ${size ? `(${size})` : ''}`.trim(),
+    studioPrice: 0
+  };
+}
 export function parsePhotoSizeScore(sizeStr: string): number {
   if (!sizeStr) return 999999;
   const norm = sizeStr.replace('*', 'x').toLowerCase().trim();
@@ -614,109 +717,6 @@ export function getFrameCategoryLabel(cat: FrameCategory): string {
   }
 }
 
-/**
- * Tìm kiếm hoặc suy luận thông tin sản phẩm từ danh mục sản phẩm.
- */
-export function resolveProductForCode(code: string, products: Product[] = []) {
-  const cleanCode = code.toUpperCase().trim();
-  // 1. Try exact match in GIÁ STUDIO
-  let matched = products.find(
-    p => p.code.toUpperCase().trim() === cleanCode && p.category === 'GIÁ STUDIO'
-  );
-  // 2. Try exact match in any category
-  if (!matched) {
-    matched = products.find(p => p.code.toUpperCase().trim() === cleanCode);
-  }
-  // 3. Try flexible match (ignore *, x, X, _)
-  if (!matched) {
-    const normInput = cleanCode.replace(/[*xX_\-]/g, '');
-    matched = products.find(p => p.code.toUpperCase().replace(/[*xX_\-]/g, '') === normInput);
-  }
-
-  // 4. Try base product without framing suffixes (K456, K45, K10, K11, TT1, TT2, etc.)
-  let baseMatched: Product | undefined = undefined;
-  if (!matched) {
-    const stripped = cleanCode.replace(/(K456|K45|K10|K11|TT1|TT2)$/i, '');
-    baseMatched = products.find(p => {
-      const pNorm = p.code.toUpperCase().replace(/[*xX_\-]/g, '');
-      const sNorm = stripped.replace(/[*xX_\-]/g, '');
-      return (pNorm === sNorm || p.code.toUpperCase() === stripped) && p.category === 'GIÁ STUDIO';
-    });
-
-    if (!baseMatched) {
-      // Also try HDST prefix for 4KST or HDPROST
-      const hdCode = stripped.replace(/^(4KST|HDPROST)/, 'HDST');
-      baseMatched = products.find(p => {
-        const pNorm = p.code.toUpperCase().replace(/[*xX_\-]/g, '');
-        const sNorm = hdCode.replace(/[*xX_\-]/g, '');
-        return (pNorm === sNorm || p.code.toUpperCase() === hdCode) && p.category === 'GIÁ STUDIO';
-      });
-    }
-  }
-
-  if (matched) {
-    return {
-      matchedProduct: matched,
-      name: matched.name,
-      size: matched.size,
-      fullTitle: `${matched.name} (${matched.size})`,
-      studioPrice: matched.price
-    };
-  }
-
-  if (baseMatched) {
-    return {
-      matchedProduct: baseMatched,
-      name: baseMatched.name,
-      size: baseMatched.size,
-      fullTitle: `${baseMatched.name} (${baseMatched.size})`,
-      studioPrice: baseMatched.price
-    };
-  }
-
-  // Infer name and size if not found in catalog
-  let size = '';
-  const sizeMatch = cleanCode.match(/(\d{2,3})[*xX](\d{2,3})/);
-  if (sizeMatch) {
-    size = `${sizeMatch[1]}*${sizeMatch[2]}`;
-  } else if (cleanCode.includes('6096') || cleanCode.includes('6090')) {
-    size = '60*90';
-  }
-
-  let baseName = 'Ảnh Hoàn Thiện';
-  if (cleanCode.startsWith('LVST')) baseName = 'Ảnh Lụa Viền Bo Viền';
-  else if (cleanCode.startsWith('MKST')) {
-    baseName = cleanCode.includes('K456') ? 'Ảnh Mika Khung K456'
-      : cleanCode.includes('K11') ? 'Ảnh Mika Khung K11'
-      : cleanCode.includes('TT1') ? 'Ảnh Mika Khung Titan 1'
-      : cleanCode.includes('TT2') ? 'Ảnh Mika Khung Titan 2'
-      : 'Ảnh Mika Phổ Thông Bo Viền';
-  } else if (cleanCode.startsWith('HDST')) {
-    baseName = cleanCode.includes('K456') ? 'Ảnh HD Gương Khung K456'
-      : cleanCode.includes('K10') ? 'Ảnh HD Gương Khung K10'
-      : cleanCode.includes('K11') ? 'Ảnh HD Gương Khung K11'
-      : cleanCode.includes('TT1') ? 'Ảnh HD Gương Khung Titan 1'
-      : cleanCode.includes('TT2') ? 'Ảnh HD Gương Khung Titan 2'
-      : 'Ảnh HD Gương Siêu Bóng Bo Viền';
-  } else if (cleanCode.startsWith('4KST')) {
-    baseName = cleanCode.includes('K456') ? 'Ảnh 4K Siêu Nét Khung K456'
-      : cleanCode.includes('TT1') ? 'Ảnh 4K Siêu Nét Khung Titan 1'
-      : cleanCode.includes('TT2') ? 'Ảnh 4K Siêu Nét Khung Titan 2'
-      : 'Ảnh 4K Siêu Nét Bo Viền';
-  } else if (cleanCode.startsWith('HDPROST')) {
-    baseName = cleanCode.includes('K456') || cleanCode.includes('K45') ? 'Ảnh HD Pro Siêu Nét Khung K456'
-      : cleanCode.includes('TT2') ? 'Ảnh HD Pro Siêu Nét Khung Titan 2'
-      : 'Ảnh HD Pro Siêu Nét';
-  }
-
-  return {
-    matchedProduct: undefined,
-    name: baseName,
-    size: size || 'Tiêu chuẩn',
-    fullTitle: `${baseName} ${size ? `(${size})` : ''}`.trim(),
-    studioPrice: 0
-  };
-}
 
 /**
  * Kiểm tra mã sản phẩm thuộc Danh mục "Sản Phẩm Nhập Thành Phẩm & Định Mức Tùy Chỉnh"

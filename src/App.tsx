@@ -247,20 +247,7 @@ export default function App() {
 
   // Stock Inward / Purchase handler: lưu TRỰC TIẾP lên collection 'purchases' trên Firestore
   const handleSaveStockImport = (receipt: StockImportReceipt) => {
-    saveStockImportToFirestore(receipt, userContext).catch(console.error);
-
-    // Tự động tăng số lượng tồn kho vật tư nếu phiếu có gắn mã vật tư tương ứng
-    materials.forEach(mat => {
-      const importedItem = receipt.items.find(it => it.materialId === mat.id);
-      if (importedItem) {
-        const updatedMat: Material = {
-          ...mat,
-          stockQuantity: mat.stockQuantity + importedItem.quantity,
-          updatedAt: new Date().toISOString()
-        };
-        saveMaterialToFirestore(updatedMat, userContext).catch(console.error);
-      }
-    });
+    saveStockImportToFirestore(receipt, userContext, materials).catch(console.error);
   };
 
   const handleDeleteStockImport = (receiptId: string) => {
