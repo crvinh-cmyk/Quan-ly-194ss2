@@ -628,7 +628,7 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
   // Total Inward Value for Current Year (hoặc năm được chọn)
   const currentYearTotalInward = useMemo(() => {
     return stockImports
-      .filter(imp => new Date(imp.date).getFullYear() === currentYear)
+      .filter(imp => new Date(imp.date).getFullYear() === currentYear && imp.status !== "pending" && imp.status !== "ordered")
       .reduce((sum, imp) => sum + (imp.totalAmount || 0), 0);
   }, [stockImports, currentYear]);
 
@@ -647,6 +647,7 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
   // 3. Filtered Stock Imports for Selected Year & Supplier
   const filteredStockImportsForExpenseTab = useMemo(() => {
     return stockImports.filter(imp => {
+      if (imp.status === "pending" || imp.status === "ordered") return false;
       const impYear = new Date(imp.date).getFullYear();
       if (selectedYear !== 'all' && impYear !== selectedYear) return false;
       if (selectedSupplierFilter !== 'all' && imp.supplier !== selectedSupplierFilter) return false;
@@ -672,9 +673,9 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
   // 4. Annual Supplier Summary Aggregation (Tổng cả năm mỗi nhà cung cấp có giá trị bao nhiêu tiền)
   const supplierAnnualSummaries = useMemo(() => {
     // Filter imports by selected year first
-    const yearImports = selectedYear === 'all'
+    const yearImports = (selectedYear === 'all'
       ? stockImports
-      : stockImports.filter(imp => new Date(imp.date).getFullYear() === selectedYear);
+      : stockImports.filter(imp => new Date(imp.date).getFullYear() === selectedYear)).filter(imp => imp.status !== "pending" && imp.status !== "ordered");
 
     const supplierMap: Record<string, {
       supplierName: string;
@@ -914,6 +915,11 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
   };
 
   const handleQuickUpdateStatus = (receipt: StockImportReceipt, newStatus: 'pending' | 'ordered' | 'completed') => {
+    const isOldOrder = (receipt.date || '') <= '2026-10-03';
+    if (isOldOrder) {
+      alert("Đơn nhập hàng từ 03/10/2026 trở về trước là đơn lịch sử cố định, không thể đổi trạng thái.");
+      return;
+    }
     const updatedReceipt: StockImportReceipt = {
       ...receipt,
       status: newStatus
@@ -1820,15 +1826,22 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
                           {formatCurrency(imp.totalAmount)}
                         </td>
                         <td className="py-3 px-3 text-center">
-                          <select
-                            value={imp.status || 'pending'}
-                            onChange={(e) => handleQuickUpdateStatus(imp, e.target.value as 'pending' | 'ordered' | 'completed')}
-                            className={`px-2 py-1 rounded-xl text-[11px] font-extrabold border outline-none cursor-pointer transition shadow-2xs ${imp.status === 'completed' ? 'bg-emerald-100 text-emerald-950 border-emerald-300' : imp.status === 'ordered' ? 'bg-blue-100 text-blue-950 border-blue-300' : 'bg-amber-100 text-amber-950 border-amber-300'}`}
-                          >
-                            <option value="pending">⏳ Chờ xử lý</option>
-                            <option value="ordered">🚚 Đã lên đơn</option>
-                            <option value="completed">✅ Hàng đã nhập kho</option>
-                          </select>
+                          {(imp.date || '') <= '2026-10-03' ? (
+                            <span className="px-2.5 py-1 rounded-full text-[11px] font-bold bg-slate-100 text-slate-700 border border-slate-300 inline-flex items-center gap-1 cursor-default" title="Đơn nhập kho lịch sử trước 03/10/2026 - Không cộng dồn lại kho">
+                              <CheckCircle2 className="w-3 h-3 text-slate-500" />
+                              <span>Hàng đã nhập kho (Lịch sử)</span>
+                            </span>
+                          ) : (
+                            <select
+                              value={imp.status || 'pending'}
+                              onChange={(e) => { e.stopPropagation(); handleQuickUpdateStatus(imp, e.target.value as 'pending' | 'ordered' | 'completed'); }}
+                              className={`px-2 py-1 rounded-xl text-[11px] font-extrabold border outline-none cursor-pointer transition shadow-2xs ${imp.status === 'completed' ? 'bg-emerald-100 text-emerald-950 border-emerald-300' : imp.status === 'ordered' ? 'bg-blue-100 text-blue-950 border-blue-300' : 'bg-amber-100 text-amber-950 border-amber-300'}`}
+                            >
+                              <option value="pending">⏳ Chờ xử lý</option>
+                              <option value="ordered">🚚 Đã lên đơn</option>
+                              <option value="completed">✅ Hàng đã nhập kho</option>
+                            </select>
+                          )}
                         </td>
                         <td className="py-3 px-3 text-center">
                           <div className="flex items-center justify-center gap-1.5">
@@ -1941,27 +1954,34 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
                           {formatCurrency(imp.totalAmount)}
                         </td>
                         <td className="py-3 px-3 text-center">
-                          <select
-                            value={imp.status || 'pending'}
-                            onChange={(e) => handleQuickUpdateStatus(imp, e.target.value as 'pending' | 'ordered' | 'completed')}
-                            className={`px-2.5 py-1 rounded-xl text-xs font-extrabold border outline-none cursor-pointer transition shadow-2xs ${imp.status === 'completed' ? 'bg-emerald-100 text-emerald-950 border-emerald-300 hover:bg-emerald-200' : imp.status === 'ordered' ? 'bg-blue-100 text-blue-950 border-blue-300 hover:bg-blue-200' : 'bg-amber-100 text-amber-950 border-amber-300 hover:bg-amber-200'}`}
-                            title="Thay đổi trạng thái đơn nhập hàng (Chuyển sang Hàng đã nhập kho để cộng kho & đồng bộ giá)"
-                          >
-                            <option value="pending">⏳ Chờ xử lý</option>
-                            <option value="ordered">🚚 Đã lên đơn</option>
-                            <option value="completed">✅ Hàng đã nhập kho</option>
-                          </select>
+                          {(imp.date || '') <= '2026-10-03' ? (
+                            <span className="px-2.5 py-1 rounded-full text-[11px] font-bold bg-slate-100 text-slate-700 border border-slate-300 inline-flex items-center gap-1 cursor-default" title="Đơn nhập kho lịch sử trước 03/10/2026 - Không cộng dồn lại kho">
+                              <CheckCircle2 className="w-3 h-3 text-slate-500" />
+                              <span>Hàng đã nhập kho (Lịch sử)</span>
+                            </span>
+                          ) : (
+                            <select
+                              value={imp.status || 'pending'}
+                              onChange={(e) => handleQuickUpdateStatus(imp, e.target.value as 'pending' | 'ordered' | 'completed')}
+                              className={`px-2.5 py-1 rounded-xl text-xs font-extrabold border outline-none cursor-pointer transition shadow-2xs ${imp.status === 'completed' ? 'bg-emerald-100 text-emerald-950 border-emerald-300 hover:bg-emerald-200' : imp.status === 'ordered' ? 'bg-blue-100 text-blue-950 border-blue-300 hover:bg-blue-200' : 'bg-amber-100 text-amber-950 border-amber-300 hover:bg-amber-200'}`}
+                              title="Thay đổi trạng thái đơn nhập hàng"
+                            >
+                              <option value="pending">⏳ Chờ xử lý</option>
+                              <option value="ordered">🚚 Đã lên đơn</option>
+                              <option value="completed">✅ Hàng đã nhập kho</option>
+                            </select>
+                          )}
                         </td>
                         <td className="py-3 px-3 text-center">
                           <div className="flex items-center justify-center gap-1.5 flex-wrap">
-                            {imp.status !== 'completed' && (
+                            {(imp.date || '') > '2026-10-03' && imp.status !== 'completed' && (
                               <button
                                 type="button"
-                                onClick={() => handleQuickUpdateStatus(imp, 'completed')}
-                                className="px-2 py-1 bg-emerald-100 hover:bg-emerald-200 text-emerald-800 rounded-lg text-[11px] font-bold cursor-pointer transition flex items-center gap-1"
-                                title="Bấm để chuyển trạng thái sang Hàng đã nhập kho, tự động cộng tồn kho & cập nhật giá"
+                                onClick={(e) => { e.stopPropagation(); handleQuickUpdateStatus(imp, 'completed'); }}
+                                className="px-2 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-[11px] font-bold cursor-pointer transition shadow-xs flex items-center gap-1"
+                                title="Bấm để chuyển trạng thái sang Hàng đã nhập kho, tự động cộng dồn tồn kho & cập nhật giá"
                               >
-                                <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                                <CheckCircle2 className="w-3.5 h-3.5" />
                                 <span>Nhập kho</span>
                               </button>
                             )}
