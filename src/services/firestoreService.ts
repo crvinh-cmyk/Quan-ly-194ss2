@@ -225,6 +225,8 @@ export function subscribeCustomers(
         yearlyRevenue: Number(raw.yearlyRevenue) || 0,
         initialYearlyRevenue: raw.initialYearlyRevenue ? Number(raw.initialYearlyRevenue) : undefined,
         initialYearlyRevenues: raw.initialYearlyRevenues,
+        isFavorite: Boolean(raw.isFavorite),
+        favoriteSettlements: raw.favoriteSettlements || undefined,
         createdAt: normalizeFirestoreDate(raw.createdAt),
         userId: raw.userId,
         createdBy: raw.createdBy
@@ -246,6 +248,7 @@ export async function saveCustomerToFirestore(
   const docRef = doc(db, COLLECTIONS.CUSTOMERS, customer.id);
   const enriched = attachUserInfo({
     ...customer,
+    isFavorite: Boolean(customer.isFavorite),
     createdAt: normalizeFirestoreDate(customer.createdAt)
   }, user);
   await setDoc(docRef, cleanFirestoreObject(enriched), { merge: true });
