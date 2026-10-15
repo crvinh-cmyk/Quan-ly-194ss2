@@ -684,18 +684,47 @@ export async function executeStockImportAutoSync(
     if (costPrice > 0 && boardPrices) {
       Object.keys(boardPrices).forEach(sizeKey => {
         const row = boardPrices[sizeKey];
-        const rowCode = (row.code || "").toUpperCase().trim();
-        const rowSize = (row.size || "").toUpperCase().trim();
-        const rowName = (row.name || "").toLowerCase().trim();
-        const isMatch = (code && (rowCode === code || rowSize === code)) ||
-                        (name && rowName && (rowName.includes(name) || name.includes(rowName))) ||
-                        (code && sizeKey.toUpperCase() === code);
-        if (isMatch) {
+        const codeClean = code.replace(/\s+/g, '');
+        const fullItemStr = `${code} ${name}`.toUpperCase();
+
+        const sizeKeyClean = sizeKey.toUpperCase().replace(/\s+/g, '');
+        const sizeParts = sizeKeyClean.split(/X|\*/);
+
+        let isSizeMatch = false;
+
+        if (sizeParts.length === 2) {
+          const w = sizeParts[0];
+          const h = sizeParts[1];
+          const concatCode = w + h;
+          const xCode = `${w}X${h}`;
+          const starCode = `${w}*${h}`;
+
+          if (
+            fullItemStr.includes(xCode) ||
+            fullItemStr.includes(starCode) ||
+            fullItemStr.includes(concatCode) ||
+            fullItemStr.includes(`${w} ${h}`) ||
+            (codeClean && (codeClean === sizeKeyClean || codeClean === (row.code || '').toUpperCase().replace(/\s+/g, '')))
+          ) {
+            isSizeMatch = true;
+          }
+        } else {
+          if (
+            codeClean &&
+            (codeClean === sizeKeyClean ||
+             codeClean === (row.code || '').toUpperCase().replace(/\s+/g, '') ||
+             fullItemStr.includes(sizeKeyClean))
+          ) {
+            isSizeMatch = true;
+          }
+        }
+
+        if (isSizeMatch) {
           boardPricesChanged = true;
           const updatedRow = { ...row, updatedAt: nowFormatted };
-          if (name.includes("12li") || name.includes("12mm") || code.includes("12LI")) {
+          if (fullItemStr.includes('12LI') || fullItemStr.includes('12MM') || fullItemStr.includes('LOIXANH') || fullItemStr.includes('LÕIXANH')) {
             updatedRow.mdf12li = costPrice;
-          } else if (name.includes("fomex") || code.includes("FOMEX")) {
+          } else if (fullItemStr.includes('FOMEX') || fullItemStr.includes('SIÊUNHẸ') || fullItemStr.includes('SIEUNHE')) {
             updatedRow.fomex9li = costPrice;
           } else {
             updatedRow.mdf9li = costPrice;
@@ -1169,9 +1198,7 @@ export const DEFAULT_BOARD_CORE_PRICES: BoardCorePriceMap = {
   '60x120': { size: '60x120', mdf9li: 48000, mdf12li: 58000, fomex9li: 62000, updatedAt: '13/10/2026 08:00' },
   '70x110': { size: '70x110', mdf9li: 55000, mdf12li: 65000, fomex9li: 70000, updatedAt: '13/10/2026 08:00' },
   '80x120': { size: '80x120', mdf9li: 70000, mdf12li: 85000, fomex9li: 90000, updatedAt: '13/10/2026 08:00' },
-  '100x150': { size: '100x150', mdf9li: 110000, mdf12li: 135000, fomex9li: 145000, updatedAt: '13/10/2026 08:00' },
-  '110x180': { size: '110x180', mdf9li: 150000, mdf12li: 185000, fomex9li: 195000, updatedAt: '13/10/2026 08:00' },
-  '120x240': { size: '120x240', mdf9li: 210000, mdf12li: 260000, fomex9li: 280000, updatedAt: '13/10/2026 08:00' }
+  '100x150': { size: '100x150', mdf9li: 110000, mdf12li: 135000, fomex9li: 145000, updatedAt: '13/10/2026 08:00' }
 };
 
 const BOARD_CORE_PRICES_LOCAL_KEY = 'tiem_in_194_board_core_prices_v1';
@@ -1184,6 +1211,8 @@ export function getLocalBoardCorePrices(): BoardCorePriceMap {
     if (parsed && typeof parsed === 'object' && Object.keys(parsed).length > 0) {
       delete parsed['20x20'];
       delete parsed['30x30'];
+      delete parsed['110x180'];
+      delete parsed['120x240'];
       return { ...DEFAULT_BOARD_CORE_PRICES, ...parsed };
     }
     return DEFAULT_BOARD_CORE_PRICES;

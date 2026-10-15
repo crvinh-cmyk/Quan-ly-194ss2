@@ -187,21 +187,58 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
       });
     });
 
-    // 2. Board Core Prices
+    // 2. Board Core Prices (Ván MDF 12li, 9li & Fomex)
     try {
       const boardPrices = getLocalBoardCorePrices();
       Object.entries(boardPrices || {}).forEach(([key, row]) => {
-        const code = row.code || row.size;
-        if (!skus.some(s => s.code.toUpperCase() === code.toUpperCase())) {
-          skus.push({
-            id: `board-${key}`,
-            code: code,
-            name: row.name || `Cốt ván MDF ${row.size}`,
-            unit: 'Tấm',
-            price: row.mdf9li || 0,
-            category: 'Bảng giá Cốt Ván',
-            source: 'board'
-          });
+        const sizeDigits = key.replace(/[^0-9]/g, '') || row.size.replace(/[^0-9]/g, '');
+
+        // MDF 12li
+        if (row.mdf12li > 0) {
+          const code12 = `${sizeDigits} 12li`;
+          if (!skus.some(s => s.code.toUpperCase() === code12.toUpperCase())) {
+            skus.push({
+              id: `board-${key}-12li`,
+              code: code12,
+              name: row.name ? `${row.name} (12li)` : `Gỗ MDF ${row.size} 12li bo góc`,
+              unit: 'Tấm',
+              price: row.mdf12li,
+              category: 'Bảng giá Cốt Ván',
+              source: 'board'
+            });
+          }
+        }
+
+        // MDF 9li
+        if (row.mdf9li > 0) {
+          const code9 = `${sizeDigits} 9li bo`;
+          if (!skus.some(s => s.code.toUpperCase() === code9.toUpperCase() || s.code.toUpperCase() === `${sizeDigits} 9LI`)) {
+            skus.push({
+              id: `board-${key}-9li`,
+              code: code9,
+              name: row.name ? `${row.name} (9li bo)` : `Gỗ MDF ${row.size} 9li bo góc`,
+              unit: 'Tấm',
+              price: row.mdf9li,
+              category: 'Bảng giá Cốt Ván',
+              source: 'board'
+            });
+          }
+        }
+
+        // Fomex 9li
+        if (row.fomex9li > 0) {
+          const codeFomex = `${sizeDigits} fomex`;
+          if (!skus.some(s => s.code.toUpperCase() === codeFomex.toUpperCase())) {
+            skus.push({
+              id: `board-${key}-fomex`,
+              code: codeFomex,
+              name: `Tấm Fomex ${row.size} 9li`,
+              unit: 'Tấm',
+              price: row.fomex9li,
+              category: 'Bảng giá Cốt Ván',
+              source: 'board'
+            });
+          }
         }
       });
     } catch (e) {}
@@ -277,7 +314,7 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
             code: code,
             name: `Mực ${c.code}`,
             unit: 'Bình',
-            price: 880000,
+            price: 900000,
             category: 'Mực In 12 Màu (SVP)',
             source: 'inventory' as const
           });
@@ -875,17 +912,28 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
     setImportReceiptCode(receipt.receiptNumber);
 
     if (receipt.items && receipt.items.length > 0) {
-      setImportItemsList(receipt.items.map(it => ({
-        id: it.id || `ii-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        materialId: it.materialId || '',
-        materialCode: it.materialCode || '',
-        materialName: it.materialName || '',
-        unit: it.unit || 'Tấm',
-        quantity: it.quantity || 1,
-        costPrice: it.costPrice || 0,
-        totalCost: it.totalCost || ((it.quantity || 1) * (it.costPrice || 0)),
-        note: it.note || ''
-      })));
+      setImportItemsList(receipt.items.map(it => {
+        let cp = it.costPrice || 0;
+        // Auto-refresh price from 3 tabs if costPrice is 0 or default 2000 placeholder
+        if (cp === 0 || cp === 2000) {
+          const lRes = lookupPriceFrom3Tabs(it.materialCode || '', it.materialName || '');
+          if (lRes.price > 0) {
+            cp = lRes.price;
+          }
+        }
+        const qty = it.quantity || 1;
+        return {
+          id: it.id || `ii-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          materialId: it.materialId || '',
+          materialCode: it.materialCode || '',
+          materialName: it.materialName || '',
+          unit: it.unit || 'Tấm',
+          quantity: qty,
+          costPrice: cp,
+          totalCost: qty * cp,
+          note: it.note || ''
+        };
+      }));
     } else {
       setImportItemsList([
         {
@@ -903,21 +951,199 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
     setIsNewImportModalOpen(true);
   };
 
+  // Helper to look up board core prices directly from size & thickness (MDF 12li, 9li, Fomex)
+  const lookupBoardCorePrice = (code: string, name: string): { price: number; name?: string } => {
+    try {
+      const boardPrices = getLocalBoardCorePrices();
+      if (!boardPrices) return { price: 0 };
+
+      const fullStr = `${code || ''} ${name || ''}`.toUpperCase().trim();
+
+      // Determine thickness / material type
+      let field: 'mdf12li' | 'fomex9li' | 'mdf9li' = 'mdf9li';
+      if (fullStr.includes('12LI') || fullStr.includes('12MM') || fullStr.includes('12 LI') || fullStr.includes('LOIXANH') || fullStr.includes('LÕIXANH')) {
+        field = 'mdf12li';
+      } else if (fullStr.includes('FOMEX') || fullStr.includes('SIÊUNHẸ') || fullStr.includes('SIEUNHE')) {
+        field = 'fomex9li';
+      } else {
+        field = 'mdf9li';
+      }
+
+      const codeClean = (code || '').toUpperCase().replace(/\s+/g, '');
+
+      // 1. First try exact match on sizeKey or row.code or row.size in boardPrices
+      for (const key of Object.keys(boardPrices)) {
+        const row = boardPrices[key];
+        const rowSizeClean = (row.size || key).toUpperCase().replace(/\s+/g, '');
+        const rowCodeClean = (row.code || '').toUpperCase().replace(/\s+/g, '');
+
+        if (codeClean && (codeClean === rowCodeClean || codeClean === rowSizeClean || key.toUpperCase() === codeClean)) {
+          if (row[field] && row[field] > 0) return { price: row[field], name: row.name };
+          if (row.mdf9li > 0) return { price: row.mdf9li, name: row.name };
+        }
+      }
+
+      // 2. Extract digits from code / name to find size (e.g., 6090 -> 60x90, 1521 -> 15x21, 2030 -> 20x30, 5075 -> 50x75)
+      const digitsMatch = fullStr.match(/\d+/g) || [];
+      const digitsJoined = digitsMatch.join('');
+
+      for (const key of Object.keys(boardPrices)) {
+        const row = boardPrices[key];
+        const rSize = (row.size || key).toUpperCase().replace(/\s+/g, '');
+        const rDigits = rSize.match(/\d+/g) || [];
+
+        if (rDigits.length >= 2) {
+          const d1 = rDigits[0];
+          const d2 = rDigits[1];
+          const combo1 = `${d1}${d2}`;
+          const combo2 = `${d1}X${d2}`;
+          const combo3 = `${d1}*${d2}`;
+
+          if (digitsJoined.includes(combo1) || fullStr.includes(combo2) || fullStr.includes(combo3) || (fullStr.includes(d1) && fullStr.includes(d2))) {
+            const p = row[field] > 0 ? row[field] : (row.mdf9li || row.mdf12li || row.fomex9li || 0);
+            if (p > 0) {
+              return { price: p, name: row.name || `Gỗ MDF ${row.size}` };
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.error('Error in lookupBoardCorePrice:', e);
+    }
+    return { price: 0 };
+  };
+
+  // Helper to look up current unit price from 3 Tabs: 1. Giấy In, 2. Bảng Giá Cốt, 3. Mực In (Default 900.000 đ) & 4. Phụ kiện
+  const lookupPriceFrom3Tabs = (code: string, name: string): { price: number; matchedName?: string; matchedUnit?: string } => {
+    const codeClean = (code || '').toUpperCase().trim();
+    const nameClean = (name || '').toLowerCase().trim();
+
+    // 1. Check Ink (Mực in - Default 900,000 đ/bình)
+    const isInk = codeClean.startsWith('MUC') || codeClean.includes('LUCIA') || nameClean.includes('mực') || nameClean.includes('lucia');
+    if (isInk) {
+      const matchedMat = materials?.find(m => {
+        const mCat = (m.category || '').toLowerCase();
+        const mName = m.name.toLowerCase();
+        const mCode = m.code.toUpperCase();
+        return mCat.includes('mực') || mName.includes('mực') || mCode.startsWith('MUC');
+      });
+      const price = (matchedMat && matchedMat.costPrice > 0) ? matchedMat.costPrice : 900000;
+      return { price, matchedUnit: 'Bình' };
+    }
+
+    // 2. Check Board Core Prices (Bảng giá cốt vật tư)
+    const boardRes = lookupBoardCorePrice(codeClean, nameClean);
+    if (boardRes.price > 0) {
+      return {
+        price: boardRes.price,
+        matchedName: boardRes.name,
+        matchedUnit: 'Tấm'
+      };
+    }
+
+    // 3. Check Accessory Materials (Bảng giá phụ kiện, phào, keo, viền, mica)
+    try {
+      const accItems = getLocalAccessoryMaterials();
+      if (accItems && accItems.length > 0) {
+        const matchedAcc = accItems.find(a => {
+          const aId = (a.id || '').toUpperCase().trim();
+          const aName = (a.name || '').toLowerCase().trim();
+          if (codeClean && (codeClean === aId || codeClean === aId.replace(/-/g, ''))) return true;
+          if (nameClean && nameClean.length >= 3 && aName && (aName === nameClean || aName.includes(nameClean) || nameClean.includes(aName))) return true;
+          return false;
+        });
+        if (matchedAcc && matchedAcc.price > 0) {
+          return {
+            price: matchedAcc.price,
+            matchedName: matchedAcc.name,
+            matchedUnit: matchedAcc.unit || 'Cái'
+          };
+        }
+      }
+    } catch (e) {}
+
+    // 4. Check Paper Catalog (Danh mục giấy in) - Do NOT match if material is board/wood/mdf/fomex/ink
+    const isBoardOrWood = nameClean.includes('mdf') || nameClean.includes('fomex') || nameClean.includes('ván') || nameClean.includes('gỗ') || nameClean.includes('khung') || nameClean.includes('phào') || codeClean.includes('12LI') || codeClean.includes('9LI') || codeClean.includes('FOMEX');
+
+    if (!isBoardOrWood) {
+      try {
+        const paperItems = getLocalPaperMaterials();
+        if (paperItems && paperItems.length > 0) {
+          const matchedPaper = paperItems.find(p => {
+            const pSku = (p.sku || '').toUpperCase().trim();
+            const pName = p.name.toLowerCase().trim();
+
+            if (codeClean && pSku) {
+              const c1 = codeClean.replace(/[-\s]/g, '');
+              const c2 = pSku.replace(/[-\s]/g, '');
+              if (c1 === c2) return true;
+            }
+            if (nameClean && nameClean.length >= 3 && pName && (pName === nameClean || (pName.includes(nameClean) && nameClean.length >= 4))) {
+              return true;
+            }
+            return false;
+          });
+          if (matchedPaper && matchedPaper.price > 0) {
+            return {
+              price: matchedPaper.price,
+              matchedName: matchedPaper.name,
+              matchedUnit: matchedPaper.unit || 'Cuộn'
+            };
+          }
+        }
+      } catch (e) {}
+    }
+
+    // 5. Check General Warehouse Materials (Tồn kho vật tư)
+    if (materials && materials.length > 0) {
+      const matchedMat = materials.find(m => {
+        const mCode = m.code.toUpperCase().trim();
+        const mName = m.name.toLowerCase().trim();
+        if (codeClean && mCode) {
+          const c1 = codeClean.replace(/[-\s]/g, '');
+          const c2 = mCode.replace(/[-\s]/g, '');
+          if (c1 === c2) return true;
+        }
+        if (nameClean && nameClean.length >= 3 && mName && mName === nameClean) {
+          return true;
+        }
+        return false;
+      });
+      if (matchedMat && matchedMat.costPrice > 0) {
+        return {
+          price: matchedMat.costPrice,
+          matchedName: matchedMat.name,
+          matchedUnit: matchedMat.unit || 'Tấm'
+        };
+      }
+    }
+
+    return { price: 0 };
+  };
+
   // Helper actions for item list in import modal
   const handleSelectSKUInRow = (idx: number, skuCodeOrId: string) => {
     const sku = filteredSKUsForSupplier.find(s => s.id === skuCodeOrId || s.code.toUpperCase() === skuCodeOrId.toUpperCase()) || availableSKUsList.find(s => s.id === skuCodeOrId || s.code.toUpperCase() === skuCodeOrId.toUpperCase());
     if (!sku) return;
 
+    // Auto-lookup current price across 3 tabs
+    const lookupRes = lookupPriceFrom3Tabs(sku.code, sku.name);
+    let cp = lookupRes.price > 0 ? lookupRes.price : (sku.price || 0);
+
+    const isInk = sku.code.toUpperCase().includes('MUC') || sku.name.toLowerCase().includes('mực') || (sku.category || '').toLowerCase().includes('mực');
+    if (isInk && cp === 0) {
+      cp = 900000;
+    }
+
     setImportItemsList(prev => {
       const updated = [...prev];
       const q = updated[idx].quantity || 1;
-      const cp = sku.price || updated[idx].costPrice || 0;
       updated[idx] = {
         ...updated[idx],
         materialId: sku.id,
         materialCode: sku.code,
-        materialName: sku.name,
-        unit: sku.unit || 'Tấm',
+        materialName: sku.name || lookupRes.matchedName, // ALWAYS keep selected SKU's name!
+        unit: sku.unit || lookupRes.matchedUnit || (isInk ? 'Bình' : 'Tấm'),
         costPrice: cp,
         totalCost: q * cp
       };
@@ -951,6 +1177,21 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
     setImportItemsList(prev => {
       const updated = [...prev];
       const cur = { ...updated[idx], [field]: val };
+
+      // When materialCode is typed or edited, try auto-lookup price & name from 3 tabs
+      if (field === 'materialCode' && typeof val === 'string' && val.trim().length >= 2) {
+        const lookupRes = lookupPriceFrom3Tabs(val.trim(), cur.materialName || '');
+        if (lookupRes.price > 0) {
+          cur.costPrice = lookupRes.price;
+          if (!cur.materialName.trim() && lookupRes.matchedName) {
+            cur.materialName = lookupRes.matchedName;
+          }
+          if (lookupRes.matchedUnit) {
+            cur.unit = lookupRes.matchedUnit;
+          }
+        }
+      }
+
       const q = Number(cur.quantity) || 0;
       const cp = Number(cur.costPrice) || 0;
       cur.totalCost = q * cp;
@@ -2103,7 +2344,7 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
 
       {/* SUB-TAB: BẢNG GIÁ CỐT VẬT TƯ */}
       {activeSubTab === 'board_prices' && (
-        <BoardCorePriceTable currentUserEmail={undefined} />
+        <BoardCorePriceTable currentUserEmail={undefined} materials={materials} />
       )}
 
       {/* SUB-TAB 4: SALES ORDERS MATERIAL DEDUCTIONS */}

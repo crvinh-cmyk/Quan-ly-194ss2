@@ -84,7 +84,7 @@ export const InkInventoryTracking: React.FC<InkInventoryTrackingProps> = ({
   const [formSupplier, setFormSupplier] = useState<string>('SVP');
   const [formReceiptCode, setFormReceiptCode] = useState<string>('');
   const [formUnit, setFormUnit] = useState<string>('Bình');
-  const [formCostPerBottle, setFormCostPerBottle] = useState<number | ''>(880000);
+  const [formCostPerBottle, setFormCostPerBottle] = useState<number | ''>(900000);
   const [formNotes, setFormNotes] = useState<string>('');
   const [formItems, setFormItems] = useState<Record<InkColorCode, number>>(() => {
     const initial: Record<InkColorCode, number> = {} as any;
@@ -200,7 +200,7 @@ export const InkInventoryTracking: React.FC<InkInventoryTrackingProps> = ({
     const currentYearRecs = inkImports.filter(r => (r.year || new Date(r.date).getFullYear()) === currentCalendarYear);
     setFormReceiptCode(`NK-MUC-${currentCalendarYear}-${(currentYearRecs.length + 1).toString().padStart(3, '0')}`);
     setFormUnit('Bình');
-    setFormCostPerBottle(880000);
+    setFormCostPerBottle(900000);
     setFormNotes('');
     const cleanItems: Record<InkColorCode, number> = {} as any;
     INK_12_COLORS.forEach(c => {

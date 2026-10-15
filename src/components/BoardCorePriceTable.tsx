@@ -13,22 +13,25 @@ import {
   FileSpreadsheet,
   ArrowUpDown
 } from 'lucide-react';
-import { BoardCorePriceMap, BoardCorePriceRow } from '../types';
+import { BoardCorePriceMap, BoardCorePriceRow, Material } from '../types';
 import {
   getLocalBoardCorePrices,
   subscribeBoardCorePrices,
   saveBoardCorePricesToFirestore,
   DEFAULT_BOARD_CORE_PRICES
 } from '../services/firestoreService';
+import { getStoredMaterials } from '../utils/storage';
 import { parsePhotoSizeScore } from './ProductCostAnalyticsTable';
 import { AccessoryMaterialPriceTable } from './AccessoryMaterialPriceTable';
 
 interface BoardCorePriceTableProps {
   currentUserEmail?: string | null;
+  materials?: Material[];
 }
 
 export const BoardCorePriceTable: React.FC<BoardCorePriceTableProps> = ({
-  currentUserEmail
+  currentUserEmail,
+  materials: materialsProp
 }) => {
   const [prices, setPrices] = useState<BoardCorePriceMap>(() => getLocalBoardCorePrices());
   const [searchQuery, setSearchQuery] = useState('');
@@ -38,6 +41,81 @@ export const BoardCorePriceTable: React.FC<BoardCorePriceTableProps> = ({
   const [newMdf9li, setNewMdf9li] = useState('');
   const [newMdf12li, setNewMdf12li] = useState('');
   const [newFomex9li, setNewFomex9li] = useState('');
+
+  const effectiveMaterials = useMemo(() => {
+    if (materialsProp && materialsProp.length > 0) return materialsProp;
+    return getStoredMaterials();
+  }, [materialsProp]);
+
+  // Lookup assigned material SKU code from inventory stock materials list
+  const getMaterialSku = (
+    sizeKey: string,
+    type: 'mdf9li' | 'mdf12li' | 'fomex9li',
+    row: BoardCorePriceRow
+  ): string | null => {
+    if (type === 'mdf9li' && (row as any).mdf9liCode) return (row as any).mdf9liCode;
+    if (type === 'mdf12li' && (row as any).mdf12liCode) return (row as any).mdf12liCode;
+    if (type === 'fomex9li' && (row as any).fomex9liCode) return (row as any).fomex9liCode;
+
+    const cleanSizeStr = sizeKey.toLowerCase().replace(/\s+/g, '');
+    const digits = cleanSizeStr.match(/\d+/g) || [];
+
+    if (type === 'mdf9li') {
+      if (cleanSizeStr === '15x21' || cleanSizeStr === '15*21' || cleanSizeStr === '1521') return '1521 9li bo';
+      if (cleanSizeStr === '20x30' || cleanSizeStr === '20*30' || cleanSizeStr === '2030') return '2030 9li bo';
+      if (cleanSizeStr === '13x18' || cleanSizeStr === '13*18' || cleanSizeStr === '1318') return '1318 9li bo';
+    }
+
+    if (effectiveMaterials && effectiveMaterials.length > 0) {
+      const found = effectiveMaterials.find(m => {
+        const codeClean = m.code.toLowerCase().replace(/\s+/g, '');
+        const nameClean = m.name.toLowerCase().replace(/\s+/g, '');
+        const catClean = (m.category || '').toLowerCase();
+
+        if (type === 'mdf12li') {
+          const isMdf = catClean.includes('mdf') || nameClean.includes('mdf') || nameClean.includes('gỗ');
+          const is12li = nameClean.includes('12li') || nameClean.includes('12mm') || codeClean.includes('12li') || nameClean.includes('lõi xanh');
+          if (!isMdf || !is12li) return false;
+        } else if (type === 'mdf9li') {
+          const isMdf = catClean.includes('mdf') || nameClean.includes('mdf') || nameClean.includes('gỗ');
+          const is9li = nameClean.includes('9li') || nameClean.includes('9mm') || codeClean.includes('9li') || nameClean.includes('tiêu chuẩn') || nameClean.includes('bo');
+          const isNot12li = !nameClean.includes('12li') && !codeClean.includes('12li');
+          if (!isMdf || !is9li || !isNot12li) return false;
+        } else if (type === 'fomex9li') {
+          const isFomex = catClean.includes('fomex') || nameClean.includes('fomex');
+          if (!isFomex) return false;
+        }
+
+        if (digits.length >= 2 && digits[0] && digits[1]) {
+          const w = digits[0];
+          const h = digits[1];
+          const hasBoth = (codeClean.includes(w) && codeClean.includes(h)) ||
+                          (nameClean.includes(w) && nameClean.includes(h));
+          return hasBoth;
+        } else if (digits.length === 1 && digits[0]) {
+          return codeClean.includes(digits[0]) || nameClean.includes(digits[0]);
+        }
+
+        return codeClean.includes(cleanSizeStr) || nameClean.includes(cleanSizeStr);
+      });
+
+      if (found) {
+        return found.code;
+      }
+    }
+
+    if (sizeKey === '1521 9li HQ') return '1521 9li HQ';
+    if (sizeKey === '2030 9li HQ') return '2030 9li HQ';
+
+    if (digits.length >= 2) {
+      const compactSize = `${digits[0]}${digits[1]}`;
+      if (type === 'mdf12li') return `${compactSize} 12li`;
+      if (type === 'mdf9li') return `${compactSize} 9li bo`;
+      if (type === 'fomex9li') return `${compactSize} Fomex`;
+    }
+
+    return null;
+  };
 
   // Subscribe to real-time updates
   useEffect(() => {
@@ -462,6 +540,24 @@ export const BoardCorePriceTable: React.FC<BoardCorePriceTableProps> = ({
                             đ
                           </span>
                         </div>
+                        {(() => {
+                          const sku = getMaterialSku(row.size, 'mdf9li', row);
+                          if (!sku) return null;
+                          return (
+                            <div className="mt-1 flex items-center justify-center">
+                              <span
+                                title={`Mã vật tư tồn kho: ${sku}`}
+                                className={`text-[10px] font-mono font-bold px-1.5 py-0.2 rounded border shadow-2xs transition ${
+                                  row.mdf9li > 0
+                                    ? 'bg-amber-100/90 text-amber-950 border-amber-300/80'
+                                    : 'bg-slate-100/80 text-slate-500 border-slate-200'
+                                }`}
+                              >
+                                {sku}
+                              </span>
+                            </div>
+                          );
+                        })()}
                       </td>
 
                       {/* Cột 3: Đơn giá Ván MDF 12li (đ/tấm) */}
@@ -484,6 +580,24 @@ export const BoardCorePriceTable: React.FC<BoardCorePriceTableProps> = ({
                             đ
                           </span>
                         </div>
+                        {(() => {
+                          const sku = getMaterialSku(row.size, 'mdf12li', row);
+                          if (!sku) return null;
+                          return (
+                            <div className="mt-1 flex items-center justify-center">
+                              <span
+                                title={`Mã vật tư tồn kho: ${sku}`}
+                                className={`text-[10px] font-mono font-bold px-1.5 py-0.2 rounded border shadow-2xs transition ${
+                                  row.mdf12li > 0
+                                    ? 'bg-blue-100/90 text-blue-950 border-blue-300/80'
+                                    : 'bg-slate-100/80 text-slate-500 border-slate-200'
+                                }`}
+                              >
+                                {sku}
+                              </span>
+                            </div>
+                          );
+                        })()}
                       </td>
 
                       {/* Cột 4: Đơn giá Fomex 9li (đ/tấm) */}
@@ -506,6 +620,24 @@ export const BoardCorePriceTable: React.FC<BoardCorePriceTableProps> = ({
                             đ
                           </span>
                         </div>
+                        {(() => {
+                          const sku = getMaterialSku(row.size, 'fomex9li', row);
+                          if (!sku) return null;
+                          return (
+                            <div className="mt-1 flex items-center justify-center">
+                              <span
+                                title={`Mã vật tư tồn kho: ${sku}`}
+                                className={`text-[10px] font-mono font-bold px-1.5 py-0.2 rounded border shadow-2xs transition ${
+                                  row.fomex9li > 0
+                                    ? 'bg-emerald-100/90 text-emerald-950 border-emerald-300/80'
+                                    : 'bg-slate-100/80 text-slate-500 border-slate-200'
+                                }`}
+                              >
+                                {sku}
+                              </span>
+                            </div>
+                          );
+                        })()}
                       </td>
 
                       {/* Cột 5: Ngày sửa giá gần nhất */}
