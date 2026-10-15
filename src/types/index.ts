@@ -28,6 +28,15 @@ export interface Product {
   updatedAt?: string;
 }
 
+export interface FavoriteMonthlySettlement {
+  discount?: number;          // Chiết khấu Thanh Toán nhập thủ công hoặc tính theo %
+  previousDebt?: number;      // Nợ cũ mang sang tháng này (nhập thủ công hoặc chốt kết chuyển)
+  manualMonthTotal?: number;  // Ghi đè tổng tiền tháng nếu cần
+  note?: string;              // Ghi chú nếu có
+  isSettled?: boolean;        // Đánh dấu đã chốt tháng
+  settledAt?: string;         // Thời gian chốt tháng
+}
+
 export interface Customer {
   id: string;
   name: string;
@@ -41,6 +50,8 @@ export interface Customer {
   yearlyRevenue?: number; // Tổng doanh thu từ 01/01 đến 31/12 hàng năm (cộng dồn sau mỗi hóa đơn)
   initialYearlyRevenue?: number; // Doanh thu ban đầu trước khi dùng phần mềm (cho năm hiện tại hoặc mặc định)
   initialYearlyRevenues?: Record<number, number>; // Doanh thu ban đầu theo từng năm { 2026: 25000000, 2025: ... }
+  isFavorite?: boolean;       // Khách hàng yêu thích (⭐)
+  favoriteSettlements?: Record<string, FavoriteMonthlySettlement>; // Theo dõi công nợ theo tháng "YYYY-MM"
   userId?: string;
   createdBy?: string;
 }

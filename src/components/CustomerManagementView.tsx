@@ -1,9 +1,10 @@
 import React, { useState, useMemo } from 'react';
-import { Customer, Order, ProductCategory } from '../types';
+import { Customer, Order, ProductCategory, WorkshopInfo } from '../types';
+import { FavoriteCustomersSection } from './FavoriteCustomersSection';
 import { formatCurrency, formatDateVN } from '../utils/formatters';
 import { calculateCustomerDebt } from '../utils/storage';
 import {
-  Users, Plus, Search, DollarSign, Phone, MapPin, CheckCircle2, History,
+  Users, Plus, Search, DollarSign, Phone, MapPin, CheckCircle2, History, Star,
   AlertCircle, Building2, Camera, User, Award, Crown, TrendingUp, Calendar,
   ArrowUpDown, Sparkles, Edit3
 } from 'lucide-react';
@@ -12,6 +13,7 @@ import { MoneyInput } from './MoneyInput';
 interface CustomerManagementViewProps {
   customers: Customer[];
   orders: Order[];
+  workshop?: WorkshopInfo;
   onAddCustomer: (customer: Customer) => void;
   onUpdateCustomer: (customer: Customer) => void;
   onRecordDebtPayment: (customerId: string, amount: number, note: string) => void;
@@ -21,13 +23,17 @@ interface CustomerManagementViewProps {
 export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
   customers,
   orders,
+  workshop,
   onAddCustomer,
   onUpdateCustomer,
   onRecordDebtPayment,
   onViewCustomerOrders
 }) => {
+  const [activeSubTab, setActiveSubTab] = useState<'all' | 'favorites'>('all');
+  const [toastMsg, setToastMsg] = useState<string>('');
+  const showToast = (msg: string) => { setToastMsg(msg); setTimeout(() => setToastMsg(''), 3500); };
   const [searchTerm, setSearchTerm] = useState('');
-  const [debtFilter, setDebtFilter] = useState<'all' | 'hasDebt'>('all');
+  const [debtFilter, setDebtFilter] = useState<'all' | 'hasDebt' | 'favorites'>('all');
   const [categoryFilter, setCategoryFilter] = useState<'all' | ProductCategory>('all');
 
   // Year tracking for "Tổng doanh thu năm" (Mặc định năm hiện tại 2026)
@@ -46,6 +52,7 @@ export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
   const [initialDebt, setInitialDebt] = useState<number>(0);
   const [initialYearlyRevenue, setInitialYearlyRevenue] = useState<number>(0);
   const [notes, setNotes] = useState('');
+  const [isFavorite, setIsFavorite] = useState<boolean>(false);
   const [customerError, setCustomerError] = useState('');
 
   // Pay Debt Modal
@@ -144,6 +151,7 @@ export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
   const filteredCustomers = useMemo(() => {
     let result = customersWithMetrics.filter(c => {
       if (debtFilter === 'hasDebt' && c.currentDebt <= 0) return false;
+      if (debtFilter === 'favorites' && !c.isFavorite) return false;
       if (categoryFilter !== 'all' && c.customerType !== categoryFilter) return false;
       if (!searchTerm.trim()) return true;
       const q = searchTerm.toLowerCase().trim();
@@ -168,6 +176,13 @@ export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
     return result;
   }, [customersWithMetrics, debtFilter, categoryFilter, searchTerm, sortBy]);
 
+    const handleToggleFavorite = (cust: Customer, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    const nextVal = !cust.isFavorite;
+    onUpdateCustomer({ ...cust, isFavorite: nextVal });
+    showToast(nextVal ? `⭐ Đã thêm "${cust.name}" vào Khách Yêu Thích!` : `Đã bỏ gắn sao "${cust.name}"`);
+  };
+
   const handleOpenAdd = () => {
     setEditingCust(null);
     setName('');
@@ -178,6 +193,7 @@ export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
     setInitialDebt(0);
     setInitialYearlyRevenue(0);
     setNotes('');
+    setIsFavorite(false);
     setCustomerError('');
     setIsCustomerModalOpen(true);
   };
@@ -195,6 +211,7 @@ export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
       : (c.initialYearlyRevenue || 0);
     setInitialYearlyRevenue(curInitialYearly);
     setNotes(c.notes || '');
+    setIsFavorite(c.isFavorite || false);
     setCustomerError('');
     setIsCustomerModalOpen(true);
   };
@@ -221,7 +238,8 @@ export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
         initialDebt: Number(initialDebt) || 0,
         initialYearlyRevenue: Number(initialYearlyRevenue) || 0,
         initialYearlyRevenues: updatedYearlyRevenues,
-        notes: notes.trim() || undefined
+        notes: notes.trim() || undefined,
+        isFavorite: isFavorite
       });
     } else {
       onAddCustomer({
@@ -332,6 +350,62 @@ export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
         </div>
       </div>
 
+      {/* Toast Alert */}
+      {toastMsg && (
+        <div className="fixed bottom-6 right-6 z-50 bg-slate-900 text-amber-300 border border-amber-400 px-4 py-3 rounded-2xl shadow-2xl flex items-center gap-2.5 text-xs font-bold animate-bounce">
+          <Sparkles className="w-4 h-4 text-amber-400 shrink-0" />
+          <span>{toastMsg}</span>
+        </div>
+      )}
+
+      {/* Sub Navigation: Tất Cả vs Khách Yêu Thích */}
+      <div className="flex items-center gap-2 p-1.5 bg-slate-100/90 rounded-2xl w-fit border border-slate-200 shadow-2xs">
+        <button
+          type="button"
+          onClick={() => setActiveSubTab("all")}
+          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition cursor-pointer ${
+            activeSubTab === "all"
+              ? "bg-white text-slate-900 shadow-sm"
+              : "text-slate-600 hover:text-slate-900 hover:bg-white/50"
+          }`}
+        >
+          <Users className="w-4 h-4 text-slate-700" />
+          <span>Tất Cả Khách & Sổ Nợ</span>
+          <span className="px-2 py-0.5 rounded-full text-[11px] font-mono bg-slate-100 text-slate-800 font-bold border border-slate-200">
+            {customers.length}
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveSubTab("favorites")}
+          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition cursor-pointer ${
+            activeSubTab === "favorites"
+              ? "bg-amber-500 text-slate-950 shadow-md font-black"
+              : "text-slate-700 hover:text-amber-900 hover:bg-amber-100/60"
+          }`}
+        >
+          <Star className={`w-4 h-4 ${activeSubTab === "favorites" ? "fill-slate-950 text-slate-950" : "text-amber-500 fill-amber-400"}`} />
+          <span>Mục Khách Yêu Thích</span>
+          <span className={`px-2 py-0.5 rounded-full text-[11px] font-mono font-bold ${
+            activeSubTab === "favorites" ? "bg-slate-950 text-amber-300" : "bg-amber-100 text-amber-900 border border-amber-300"
+          }`}>
+            {customers.filter(c => c.isFavorite).length}
+          </span>
+        </button>
+      </div>
+
+      {activeSubTab === "favorites" ? (
+        <FavoriteCustomersSection
+          customers={customers}
+          orders={orders}
+          onUpdateCustomer={onUpdateCustomer}
+          onViewCustomerOrders={onViewCustomerOrders}
+          onSwitchToAllCustomers={() => setActiveSubTab("all")}
+          workshopName={workshop?.name}
+        />
+      ) : (
+        <>
       {/* Filter & Sort Toolbar */}
       <div className="bg-white rounded-2xl p-3 border border-slate-200 shadow-xs flex flex-col md:flex-row gap-2.5 items-stretch md:items-center justify-between">
         {/* Search Input */}
@@ -437,6 +511,18 @@ export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
                 <div className="flex items-start justify-between gap-2 mb-2">
                   <div>
                     <div className="flex items-center gap-1.5 flex-wrap">
+                      <button
+                        type="button"
+                        onClick={(e) => handleToggleFavorite(cust, e)}
+                        className="p-1 rounded-lg hover:bg-amber-100/70 transition cursor-pointer shrink-0"
+                        title={cust.isFavorite ? "Bỏ gắn sao khách yêu thích" : "Gắn sao ⭐ Khách Hàng Yêu Thích"}
+                      >
+                        <Star className={`w-4 h-4 transition ${
+                          cust.isFavorite
+                            ? "text-amber-500 fill-amber-400 drop-shadow-xs"
+                            : "text-slate-300 hover:text-amber-400"
+                        }`} />
+                      </button>
                       <h3 className="font-bold text-sm text-slate-900 flex items-center gap-1">
                         <span>{cust.name}</span>
                         {isMvp && (
@@ -611,6 +697,9 @@ export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
         </div>
       )}
 
+        </>
+      )}
+
       {/* Pay Debt Modal */}
       {payModalCustomer && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs">
@@ -721,6 +810,19 @@ export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
                 </div>
               )}
 
+              {/* Toggle Khách Hàng Yêu Thích ⭐ */}
+              <label className="flex items-center gap-2.5 p-3 rounded-xl border border-amber-200 bg-amber-50/60 cursor-pointer hover:bg-amber-100/60 transition">
+                <input
+                  type="checkbox"
+                  checked={isFavorite}
+                  onChange={(e) => setIsFavorite(e.target.checked)}
+                  className="w-4 h-4 rounded text-amber-500 focus:ring-amber-400 cursor-pointer"
+                />
+                <div className="flex items-center gap-1.5 text-xs font-bold text-slate-900">
+                  <Star className={`w-4 h-4 ${isFavorite ? "text-amber-500 fill-amber-400" : "text-slate-400"}`} />
+                  <span>Đánh dấu là Khách Hàng Yêu Thích ⭐ (Tự động tạo bảng theo dõi công nợ tháng)</span>
+                </div>
+              </label>
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1">
                   Phân loại đối tượng & Bảng giá áp dụng *

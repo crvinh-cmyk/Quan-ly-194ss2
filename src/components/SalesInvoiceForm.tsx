@@ -1908,6 +1908,8 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
                           className={`p-3 rounded-xl border text-xs space-y-2 transition ${
                             isOut
                               ? 'bg-rose-950/40 border-rose-700/60'
+                              : isLow
+                              ? 'bg-red-950/40 border-red-500 shadow-md shadow-red-950/30 hover:border-red-400'
                               : 'bg-slate-800/80 border-slate-700/80 hover:border-slate-600'
                           }`}
                         >
@@ -2022,17 +2024,19 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
                               </span>
                               <span>➔</span>
                               <span className="text-slate-400">
-                                Sau đơn: <strong className={isOut ? 'text-rose-400 font-bold' : isLow ? 'text-amber-400 font-bold' : 'text-emerald-400 font-bold'}>{item.remainingStock}</strong> tấm
+                                Sau đơn: <strong className={isOut || isLow ? 'text-red-400 font-black' : 'text-emerald-400 font-bold'}>{item.remainingStock}</strong> tấm
                               </span>
                             </div>
 
                             {isOut ? (
-                              <span className="text-[10px] px-2 py-0.5 rounded bg-rose-500/20 text-rose-300 border border-rose-500/40 font-sans font-semibold">
-                                ⚠️ Kho không đủ ván
+                              <span className="text-[10px] px-2.5 py-0.5 rounded-md bg-rose-600/35 text-rose-200 border border-rose-500 font-sans font-bold flex items-center gap-1 shadow-xs">
+                                <AlertCircle className="w-3 h-3 text-rose-400 shrink-0" />
+                                <span>Kho không đủ ván</span>
                               </span>
                             ) : isLow ? (
-                              <span className="text-[10px] px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 font-sans font-semibold">
-                                Cảnh báo sắp hết ván
+                              <span className="text-[11px] px-3 py-1 rounded-md bg-red-600 text-white border border-red-400 font-sans font-black flex items-center gap-1.5 shadow-md shadow-red-900/60 animate-pulse">
+                                <AlertCircle className="w-3.5 h-3.5 text-white shrink-0 fill-red-800" />
+                                <span>Cảnh báo sắp hết ván</span>
                               </span>
                             ) : (
                               <span className="text-[10px] text-emerald-400 font-sans flex items-center gap-1 font-semibold">
