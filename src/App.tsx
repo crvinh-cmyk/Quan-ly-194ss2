@@ -395,16 +395,19 @@ export default function App() {
     }
   };
 
-  // Customer handlers (Direct Firestore)
+  // Customer handlers (Direct Firestore with Optimistic UI updates)
   const handleAddCustomer = (customer: Customer) => {
+    setCustomers(prev => [...prev.filter(c => c.id !== customer.id), customer]);
     saveCustomerToFirestore(customer, userContext).catch(console.error);
   };
 
   const handleUpdateCustomer = (customer: Customer) => {
+    setCustomers(prev => prev.map(c => c.id === customer.id ? customer : c));
     saveCustomerToFirestore(customer, userContext).catch(console.error);
   };
 
   const handleDeleteCustomer = (customerId: string) => {
+    setCustomers(prev => prev.filter(c => c.id !== customerId));
     deleteCustomerFromFirestore(customerId).catch(console.error);
   };
 

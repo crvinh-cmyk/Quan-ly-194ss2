@@ -18,10 +18,16 @@ import {
   Building2,
   DollarSign,
   CheckCircle2,
-  X
+  X,
+  Image,
+  Download,
+  ExternalLink
 } from "lucide-react";
 import { MoneyInput } from "./MoneyInput";
-import { downloadFavoriteCustomerTableJPG } from "../utils/exportFavoriteCustomerTableCanvas";
+import {
+  downloadFavoriteCustomerTableJPG,
+  generateFavoriteCustomerCanvas
+} from "../utils/exportFavoriteCustomerTableCanvas";
 
 interface FavoriteCustomersSectionProps {
   customers: Customer[];
@@ -53,6 +59,23 @@ export const FavoriteCustomersSection: React.FC<FavoriteCustomersSectionProps> =
   const [editPreviousDebt, setEditPreviousDebt] = useState<number>(0);
   const [editManualTotal, setEditManualTotal] = useState<number>(0);
   const [useManualTotal, setUseManualTotal] = useState<boolean>(false);
+
+  // Copy image modal & clipboard state
+  const [copyImageModal, setCopyImageModal] = useState<{
+    isOpen: boolean;
+    customerName: string;
+    phone?: string;
+    imageUrl: string;
+    blob: Blob | null;
+  }>({
+    isOpen: false,
+    customerName: "",
+    imageUrl: "",
+    blob: null
+  });
+  const [directCopySuccess, setDirectCopySuccess] = useState(false);
+  const [directCopyError, setDirectCopyError] = useState(false);
+  const [directCopyMsg, setDirectCopyMsg] = useState("");
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -157,6 +180,25 @@ export const FavoriteCustomersSection: React.FC<FavoriteCustomersSectionProps> =
     );
   };
 
+  // Apply quick percentage discount (1% - 10%)
+  const handleApplyPercentDiscount = (cust: Customer, percent: number) => {
+    const data = getCustomerMonthData(cust, selectedMonth);
+    const calculatedDiscount = Math.round((data.monthTotal * percent) / 100);
+    const existing = cust.favoriteSettlements || {};
+    const updated = {
+      ...existing,
+      [selectedMonth]: {
+        ...(existing[selectedMonth] || {}),
+        discount: calculatedDiscount
+      }
+    };
+    onUpdateCustomer({
+      ...cust,
+      favoriteSettlements: updated
+    });
+    showToast(`⚡ Đã tính chiết khấu ${percent}% = ${formatCurrency(calculatedDiscount)} cho ${cust.name}!`);
+  };
+
   // Open edit settlement modal
   const handleOpenEditSettlement = (cust: Customer) => {
     const data = getCustomerMonthData(cust, selectedMonth);
@@ -246,25 +288,92 @@ export const FavoriteCustomersSection: React.FC<FavoriteCustomersSectionProps> =
     }
   };
 
-  // Copy message text
-  const handleCopyMessage = (cust: Customer) => {
+  // Copy image modal trigger
+  const handleOpenCopyImageModal = async (cust: Customer) => {
     const data = getCustomerMonthData(cust, selectedMonth);
     const [y, m] = selectedMonth.split("-");
-    const text = `BẢNG CÔNG NỢ THÁNG ${m}/${y} - ${cust.name.toUpperCase()}${cust.studioName ? ` (${cust.studioName})` : ""}
-1. Khách hàng: ${cust.name}
-2. Tổng tiền trong tháng: ${formatCurrency(data.monthTotal)}
-3. Chiết khấu Thanh Toán: ${formatCurrency(data.discount)}
-4. Còn lại: ${formatCurrency(data.remaining)}
-5. Nợ cũ: ${formatCurrency(data.previousDebt)}
--------------------------------------------------
-=> CẦN THANH TOÁN: ${formatCurrency(data.dueTotal)}
--------------------------------------------------
-Quý Khách Vui lòng thanh toán trước ngày m2 tháng kế tiếp để nhận ưu đãi chiết khấu. Quá hạn khoản chiết khấu sẽ được cộng ngược lại công nợ.
-Trân Trọng!`;
+    try {
+      const canvas = await generateFavoriteCustomerCanvas({
+        customerName: cust.name,
+        studioName: cust.studioName,
+        phone: cust.phone,
+        monthStr: `${m}/${y}`,
+        monthTotal: data.monthTotal,
+        discount: data.discount,
+        remaining: data.remaining,
+        previousDebt: data.previousDebt,
+        dueTotal: data.dueTotal,
+        workshopName
+      });
 
-    navigator.clipboard.writeText(text).then(() => {
-      showToast(`📋 Đã sao chép nội dung bảng gửi "${cust.name}" vào bộ nhớ tạm!`);
-    });
+      const imageUrl = canvas.toDataURL("image/png");
+      const blob = await new Promise<Blob | null>((resolve) =>
+        canvas.toBlob(resolve, "image/png", 0.95)
+      );
+
+      setCopyImageModal({
+        isOpen: true,
+        customerName: cust.name,
+        phone: cust.phone,
+        imageUrl,
+        blob
+      });
+      setDirectCopySuccess(false);
+      setDirectCopyError(false);
+      setDirectCopyMsg("");
+
+      // Attempt immediate direct clipboard write
+      if (blob && typeof navigator !== "undefined" && navigator.clipboard && typeof ClipboardItem !== "undefined") {
+        try {
+          const item = new ClipboardItem({ "image/png": blob });
+          await navigator.clipboard.write([item]);
+          setDirectCopySuccess(true);
+          setDirectCopyMsg("Đã copy ảnh bảng công nợ thành công! Hãy mở Zalo và ấn Ctrl + V để dán gửi khách.");
+          showToast(`📋 Đã sao chép HÌNH ẢNH bảng công nợ "${cust.name}"! Mở Zalo dán (Ctrl+V).`);
+        } catch {
+          setDirectCopyError(true);
+          setDirectCopyMsg("Bấm nút 'SAO CHÉP ẢNH VÀO BỘ NHỚ TẠM' dưới đây hoặc click chuột phải vào ảnh để sao chép.");
+        }
+      }
+    } catch (e) {
+      console.error("Open copy image modal error:", e);
+      showToast("Có lỗi khi tạo hình ảnh bảng công nợ.");
+    }
+  };
+
+  // Direct clipboard copy handler inside modal
+  const handleDirectClipboardCopy = async () => {
+    let blob = copyImageModal.blob;
+    if (!blob && copyImageModal.imageUrl) {
+      try {
+        const resp = await fetch(copyImageModal.imageUrl);
+        blob = await resp.blob();
+      } catch {
+        // ignore
+      }
+    }
+
+    if (!blob) {
+      alert("Chưa tìm thấy dữ liệu ảnh để sao chép");
+      return;
+    }
+
+    try {
+      if (typeof navigator !== "undefined" && navigator.clipboard && typeof ClipboardItem !== "undefined") {
+        const item = new ClipboardItem({ "image/png": blob });
+        await navigator.clipboard.write([item]);
+        setDirectCopySuccess(true);
+        setDirectCopyError(false);
+        setDirectCopyMsg("Đã sao chép ảnh bảng công nợ thành công! Hãy mở Zalo và ấn Ctrl + V để dán gửi khách.");
+        showToast("📋 Đã sao chép HÌNH ẢNH bảng công nợ! Mở Zalo dán (Ctrl+V).");
+      } else {
+        throw new Error("Trình duyệt chưa hỗ trợ ClipboardItem");
+      }
+    } catch (err: any) {
+      setDirectCopyError(true);
+      setDirectCopySuccess(false);
+      setDirectCopyMsg("Trình duyệt hạn chế sao chép ảnh trực tiếp. Bạn hãy click chuột phải vào ảnh bên dưới chọn 'Sao chép hình ảnh' (Copy image) để dán Zalo!");
+    }
   };
 
   // Summary across all favorite customers for selected month
@@ -485,12 +594,12 @@ Trân Trọng!`;
 
                     <button
                       type="button"
-                      onClick={() => handleCopyMessage(cust)}
+                      onClick={() => handleOpenCopyImageModal(cust)}
                       className="px-3 py-1.5 bg-amber-100 hover:bg-amber-200 text-amber-950 border border-amber-300 rounded-xl text-xs font-bold flex items-center gap-1 transition cursor-pointer"
-                      title="Sao chép nội dung bảng để gửi tin nhắn Zalo"
+                      title="Sao chép hình ảnh bảng công nợ để gửi tin nhắn Zalo"
                     >
                       <Copy className="w-3.5 h-3.5 text-amber-700" />
-                      <span>Sao Chép Tin Nhắn</span>
+                      <span>Sao Chép Tin Nhắn (Ảnh)</span>
                     </button>
 
                     <button
@@ -517,8 +626,26 @@ Trân Trọng!`;
                           <th className="py-3 px-3 border-r border-slate-300 min-w-[160px] text-center font-bold">
                             Tổng tiền trong tháng
                           </th>
-                          <th className="py-3 px-3 border-r border-slate-300 min-w-[160px] text-center font-bold">
-                            Chiết khấu Thanh Toán
+                          <th className="py-3 px-3 border-r border-slate-300 min-w-[210px] text-center font-bold">
+                            <div className="flex items-center justify-center gap-1.5 flex-wrap">
+                              <span>Chiết khấu Thanh Toán</span>
+                              <select
+                                value=""
+                                onChange={(e) => {
+                                  const pct = Number(e.target.value);
+                                  if (!isNaN(pct) && pct >= 0) handleApplyPercentDiscount(cust, pct);
+                                }}
+                                className="px-2 py-0.5 text-[11px] bg-amber-500 hover:bg-amber-400 text-slate-950 font-black rounded-lg border border-amber-600 shadow-2xs cursor-pointer outline-hidden transition shrink-0"
+                                title="Chọn nhanh % chiết khấu (0% đến 10%)"
+                              >
+                                <option value="" disabled className="bg-white text-slate-900 font-bold">% CK</option>
+                                {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(pct => (
+                                  <option key={pct} value={pct} className="bg-white text-slate-900 font-semibold">
+                                    {pct}%
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
                           </th>
                           <th className="py-3 px-3 border-r border-slate-300 min-w-[140px] text-center font-bold">
                             Còn lại
@@ -553,13 +680,15 @@ Trân Trọng!`;
 
                           {/* 3. Chiết khấu Thanh Toán */}
                           <td className="py-4 px-3 border-r border-slate-300 font-mono font-bold">
-                            <span
-                              onClick={() => handleOpenEditSettlement(cust)}
-                              className="cursor-pointer hover:underline text-amber-700"
-                              title="Nhấp vào để sửa chiết khấu"
-                            >
-                              {formatCurrency(data.discount)}
-                            </span>
+                            <div className="flex items-center justify-center gap-1.5 flex-wrap">
+                              <span
+                                onClick={() => handleOpenEditSettlement(cust)}
+                                className="cursor-pointer hover:underline text-amber-700"
+                                title="Nhấp vào để sửa thủ công chiết khấu"
+                              >
+                                {formatCurrency(data.discount)}
+                              </span>
+                            </div>
                           </td>
 
                           {/* 4. Còn lại */}
@@ -708,9 +837,34 @@ Trân Trọng!`;
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">
-                  Chiết khấu Thanh Toán (VNĐ)
-                </label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-xs font-bold text-slate-700">
+                    Chiết khấu Thanh Toán (VNĐ)
+                  </label>
+                  <span className="text-[10px] text-amber-800 font-bold">Tính nhanh %:</span>
+                </div>
+                {/* 0% to 10% buttons */}
+                <div className="grid grid-cols-6 gap-1 mb-2">
+                  {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(pct => {
+                    const currentData = getCustomerMonthData(editingSettlementCustomer, selectedMonth);
+                    const calculated = Math.round((currentData.monthTotal * pct) / 100);
+                    return (
+                      <button
+                        key={pct}
+                        type="button"
+                        onClick={() => setEditDiscount(calculated)}
+                        className={`py-1 px-1 rounded-lg text-[11px] font-bold border transition cursor-pointer ${
+                          editDiscount === calculated
+                            ? 'bg-amber-500 text-slate-950 border-amber-600 shadow-xs'
+                            : 'bg-amber-50 hover:bg-amber-100 text-amber-900 border-amber-200'
+                        }`}
+                        title={`${pct}% của ${formatCurrency(currentData.monthTotal)} = ${formatCurrency(calculated)}`}
+                      >
+                        {pct}%
+                      </button>
+                    );
+                  })}
+                </div>
                 <MoneyInput
                   value={editDiscount}
                   onChange={(val) => setEditDiscount(val)}
@@ -777,6 +931,138 @@ Trân Trọng!`;
               >
                 Lưu Thay Đổi
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 3: PREVIEW & COPY IMAGE FOR ZALO */}
+      {copyImageModal.isOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-950/85 backdrop-blur-xs animate-in fade-in">
+          <div className="bg-white rounded-3xl shadow-2xl max-w-2xl w-full overflow-hidden border border-slate-200 flex flex-col max-h-[92vh]">
+            {/* Header Modal */}
+            <div className="p-3.5 sm:p-4 bg-slate-900 text-white flex items-center justify-between border-b border-slate-800">
+              <div className="flex items-center gap-2.5">
+                <span className="p-2 bg-amber-500/20 text-amber-400 rounded-xl">
+                  <Image className="w-5 h-5" />
+                </span>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h4 className="font-extrabold text-sm sm:text-base">
+                      Xem Trước & Sao Chép Ảnh Công Nợ (Gửi Zalo)
+                    </h4>
+                  </div>
+                  <p className="text-xs text-slate-400">
+                    Khách hàng: <strong className="text-slate-200">{copyImageModal.customerName}</strong>
+                    {copyImageModal.phone && (
+                      <span className="ml-2 font-mono text-slate-300">({copyImageModal.phone})</span>
+                    )}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setCopyImageModal({ isOpen: false, customerName: "", imageUrl: "", blob: null })}
+                className="p-1.5 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Alert Status Banner */}
+            {directCopySuccess ? (
+              <div className="p-3 bg-gradient-to-r from-emerald-600 to-teal-600 text-white text-xs sm:text-sm font-bold flex items-center justify-between gap-3 shadow-inner">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="w-5 h-5 text-emerald-200 shrink-0" />
+                  <span>{directCopyMsg || 'Đã copy ảnh bảng công nợ thành công! Hãy mở Zalo và ấn Ctrl + V để dán gửi khách.'}</span>
+                </div>
+                {copyImageModal.phone && (
+                  <a
+                    href={`https://zalo.me/${copyImageModal.phone}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="px-3 py-1 bg-white text-emerald-950 rounded-lg text-xs font-black shadow-xs hover:bg-emerald-50 flex items-center gap-1.5 cursor-pointer shrink-0"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5 text-blue-600" />
+                    <span>Mở Zalo dán (Ctrl+V)</span>
+                  </a>
+                )}
+              </div>
+            ) : directCopyError ? (
+              <div className="p-3 bg-amber-50 border-b border-amber-200 text-xs text-amber-950 flex items-start gap-2.5">
+                <Sparkles className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <strong className="block font-bold mb-0.5">Trạng thái sao chép:</strong>
+                  <p className="font-semibold text-amber-900 mb-1">{directCopyMsg}</p>
+                  <p className="text-[11px] text-amber-800">
+                    👉 <strong>Cách xử lý:</strong> Click <strong>chuột phải vào ảnh bên dưới</strong> (hoặc nhấn giữ trên điện thoại) và chọn <strong>"Sao chép hình ảnh" (Copy image)</strong>, sau đó mở Zalo và ấn <strong>Ctrl + V</strong> để gửi khách!
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div className="p-2.5 bg-slate-50 border-b border-slate-200 text-xs text-slate-600 flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-amber-600 shrink-0" />
+                <span>
+                  Bấm nút vàng dưới đây để sao chép ảnh công nợ vào bộ nhớ tạm, sau đó mở Zalo ấn <strong>Ctrl + V</strong> để gửi khách.
+                </span>
+              </div>
+            )}
+
+            {/* ACTION BUTTONS */}
+            <div className="p-3 bg-slate-100 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2.5">
+              <button
+                type="button"
+                onClick={handleDirectClipboardCopy}
+                className={`flex items-center justify-center gap-2 px-5 py-2.5 sm:py-3 rounded-xl font-black text-xs sm:text-sm shadow-md transition transform active:scale-98 cursor-pointer flex-1 sm:flex-initial ${
+                  directCopySuccess
+                    ? 'bg-emerald-600 hover:bg-emerald-500 text-white ring-2 ring-emerald-300'
+                    : 'bg-amber-500 hover:bg-amber-400 text-slate-950 shadow-amber-500/20'
+                }`}
+              >
+                <Copy className="w-4 h-4" />
+                <span>
+                  {directCopySuccess
+                    ? '✅ ĐÃ COPY ẢNH THÀNH CÔNG! (MỞ ZALO DÁN CTRL+V)'
+                    : '📋 SAO CHÉP ẢNH VÀO BỘ NHỚ TẠM'}
+                </span>
+              </button>
+
+              <div className="flex items-center gap-2 shrink-0">
+                {copyImageModal.phone && (
+                  <a
+                    href={`https://zalo.me/${copyImageModal.phone}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-1.5 px-3 py-2 sm:py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold shadow-xs transition cursor-pointer"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    <span>Mở Zalo khách</span>
+                  </a>
+                )}
+
+                <a
+                  href={copyImageModal.imageUrl}
+                  download={`Bang_Cong_No_${copyImageModal.customerName.replace(/\s+/g, '_')}.png`}
+                  className="flex items-center gap-1 px-3 py-2 sm:py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-semibold shadow-xs transition cursor-pointer"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Tải ảnh PNG</span>
+                </a>
+              </div>
+            </div>
+
+            {/* Rendered Canvas Image Preview */}
+            <div className="p-4 flex-1 overflow-y-auto bg-slate-200/80 flex items-center justify-center">
+              <div className="max-w-full text-center">
+                <img
+                  src={copyImageModal.imageUrl}
+                  alt="Bảng công nợ xem trước"
+                  className="max-h-[56vh] max-w-full object-contain rounded-xl shadow-xl border border-slate-300 bg-white inline-block"
+                />
+                <p className="mt-2 text-[11px] text-slate-500">
+                  💡 Bạn có thể chuột phải vào ảnh chọn <strong>"Sao chép hình ảnh"</strong> bất cứ lúc nào
+                </p>
+              </div>
             </div>
           </div>
         </div>
