@@ -12,6 +12,7 @@ export interface FavoriteCustomerExportData {
   previousDebt: number;
   dueTotal: number;
   workshopName?: string;
+  discountLabel?: string;
 }
 
 const FONT_SANS =
@@ -163,7 +164,7 @@ export async function generateFavoriteCustomerCanvas(
   const headers = [
     "khách hàng",
     "Tổng tiền trong tháng",
-    "Chiết khấu Thanh Toán",
+    data.discountLabel || "Chiết khấu Thanh Toán",
     "Còn lại",
     "Nợ cũ",
     "Cần Thanh Toán",

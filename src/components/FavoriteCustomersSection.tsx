@@ -60,6 +60,10 @@ export const FavoriteCustomersSection: React.FC<FavoriteCustomersSectionProps> =
   const [editManualTotal, setEditManualTotal] = useState<number>(0);
   const [useManualTotal, setUseManualTotal] = useState<boolean>(false);
 
+  // Label preference per customer (Chiết khấu Thanh Toán vs Hỗ trợ vận chuyển)
+  const [customerDiscountLabels, setCustomerDiscountLabels] = useState<Record<string, 'Chiết khấu Thanh Toán' | 'Hỗ trợ vận chuyển'>>({});
+  const getCustomerDiscountLabel = (custId: string): string => customerDiscountLabels[custId] || 'Chiết khấu Thanh Toán';
+
   // Copy image modal & clipboard state
   const [copyImageModal, setCopyImageModal] = useState<{
     isOpen: boolean;
@@ -268,6 +272,7 @@ export const FavoriteCustomersSection: React.FC<FavoriteCustomersSectionProps> =
   const handleDownloadJPG = async (cust: Customer) => {
     const data = getCustomerMonthData(cust, selectedMonth);
     const [y, m] = selectedMonth.split("-");
+    const discountLabel = getCustomerDiscountLabel(cust.id);
     try {
       await downloadFavoriteCustomerTableJPG({
         customerName: cust.name,
@@ -279,7 +284,8 @@ export const FavoriteCustomersSection: React.FC<FavoriteCustomersSectionProps> =
         remaining: data.remaining,
         previousDebt: data.previousDebt,
         dueTotal: data.dueTotal,
-        workshopName
+        workshopName,
+        discountLabel
       });
       showToast(`📷 Đã xuất ảnh bảng công nợ "${cust.name}"!`);
     } catch (e) {
@@ -292,6 +298,7 @@ export const FavoriteCustomersSection: React.FC<FavoriteCustomersSectionProps> =
   const handleOpenCopyImageModal = async (cust: Customer) => {
     const data = getCustomerMonthData(cust, selectedMonth);
     const [y, m] = selectedMonth.split("-");
+    const discountLabel = getCustomerDiscountLabel(cust.id);
     try {
       const canvas = await generateFavoriteCustomerCanvas({
         customerName: cust.name,
@@ -303,7 +310,8 @@ export const FavoriteCustomersSection: React.FC<FavoriteCustomersSectionProps> =
         remaining: data.remaining,
         previousDebt: data.previousDebt,
         dueTotal: data.dueTotal,
-        workshopName
+        workshopName,
+        discountLabel
       });
 
       const imageUrl = canvas.toDataURL("image/png");
@@ -626,25 +634,61 @@ export const FavoriteCustomersSection: React.FC<FavoriteCustomersSectionProps> =
                           <th className="py-3 px-3 border-r border-slate-300 min-w-[160px] text-center font-bold">
                             Tổng tiền trong tháng
                           </th>
-                          <th className="py-3 px-3 border-r border-slate-300 min-w-[210px] text-center font-bold">
+                          <th className="py-3 px-3 border-r border-slate-300 min-w-[220px] text-center font-bold">
                             <div className="flex items-center justify-center gap-1.5 flex-wrap">
-                              <span>Chiết khấu Thanh Toán</span>
-                              <select
-                                value=""
-                                onChange={(e) => {
-                                  const pct = Number(e.target.value);
-                                  if (!isNaN(pct) && pct >= 0) handleApplyPercentDiscount(cust, pct);
-                                }}
-                                className="px-2 py-0.5 text-[11px] bg-amber-500 hover:bg-amber-400 text-slate-950 font-black rounded-lg border border-amber-600 shadow-2xs cursor-pointer outline-hidden transition shrink-0"
-                                title="Chọn nhanh % chiết khấu (0% đến 10%)"
-                              >
-                                <option value="" disabled className="bg-white text-slate-900 font-bold">% CK</option>
-                                {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(pct => (
-                                  <option key={pct} value={pct} className="bg-white text-slate-900 font-semibold">
-                                    {pct}%
+                              {/* Dropdown for Title: Chiết khấu Thanh Toán vs Hỗ trợ vận chuyển */}
+                              <div className="relative inline-flex items-center">
+                                <select
+                                  value={getCustomerDiscountLabel(cust.id)}
+                                  onChange={(e) => {
+                                    const val = e.target.value as 'Chiết khấu Thanh Toán' | 'Hỗ trợ vận chuyển';
+                                    setCustomerDiscountLabels(prev => ({ ...prev, [cust.id]: val }));
+                                  }}
+                                  className="bg-transparent text-slate-900 font-extrabold text-xs sm:text-sm cursor-pointer outline-none border-none appearance-none pr-4.5 py-0.5 text-center hover:text-amber-700 transition"
+                                  style={{
+                                    backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke-width='3' stroke='%23334155'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' d='M19.5 8.25l-7.5 7.5-7.5-7.5' /%3E%3C/svg%3E")`,
+                                    backgroundRepeat: 'no-repeat',
+                                    backgroundPosition: 'right center',
+                                    backgroundSize: '12px'
+                                  }}
+                                  title="Bấm để chọn: Chiết khấu Thanh Toán hoặc Hỗ trợ vận chuyển"
+                                >
+                                  <option value="Chiết khấu Thanh Toán" className="bg-white text-slate-900 font-bold">
+                                    Chiết khấu Thanh Toán
                                   </option>
-                                ))}
-                              </select>
+                                  <option value="Hỗ trợ vận chuyển" className="bg-white text-slate-900 font-bold">
+                                    Hỗ trợ vận chuyển
+                                  </option>
+                                </select>
+                              </div>
+
+                              {/* Quick % discount select: Orange button with downward chevron icon replacing "% CK" */}
+                              <div className="relative inline-flex items-center">
+                                <select
+                                  value=""
+                                  onChange={(e) => {
+                                    const pct = Number(e.target.value);
+                                    if (!isNaN(pct) && pct >= 0) handleApplyPercentDiscount(cust, pct);
+                                  }}
+                                  className="w-7 h-6 text-xs bg-amber-500 hover:bg-amber-400 text-slate-950 font-black rounded-lg border border-amber-600 shadow-2xs cursor-pointer outline-none transition shrink-0 appearance-none flex items-center justify-center text-center"
+                                  style={{
+                                    backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke-width='3.5' stroke='%230f172a'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' d='M19.5 8.25l-7.5 7.5-7.5-7.5' /%3E%3C/svg%3E")`,
+                                    backgroundRepeat: 'no-repeat',
+                                    backgroundPosition: 'center center',
+                                    backgroundSize: '13px'
+                                  }}
+                                  title="Bấm chọn nhanh % chiết khấu (0% đến 10%)"
+                                >
+                                  <option value="" disabled className="bg-white text-slate-900 font-bold">
+                                    
+                                  </option>
+                                  {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(pct => (
+                                    <option key={pct} value={pct} className="bg-white text-slate-900 font-semibold">
+                                      {pct}%
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
                             </div>
                           </th>
                           <th className="py-3 px-3 border-r border-slate-300 min-w-[140px] text-center font-bold">
@@ -839,7 +883,7 @@ export const FavoriteCustomersSection: React.FC<FavoriteCustomersSectionProps> =
               <div>
                 <div className="flex items-center justify-between mb-1">
                   <label className="block text-xs font-bold text-slate-700">
-                    Chiết khấu Thanh Toán (VNĐ)
+                    {getCustomerDiscountLabel(editingSettlementCustomer.id)} (VNĐ)
                   </label>
                   <span className="text-[10px] text-amber-800 font-bold">Tính nhanh %:</span>
                 </div>
