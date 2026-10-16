@@ -1280,46 +1280,132 @@ export async function saveBoardCorePricesToFirestore(
 // =================================================================
 // 9.2 BẢNG GIÁ VẬT TƯ PHỤ KIỆN (MICA, VIỀN, PHÀO, KEO...)
 // =================================================================
+// =================================================================
+// 9.2 BẢNG GIÁ VẬT TƯ PHỤ KIỆN (MICA, VIỀN, PHÀO, KEO...)
+// =================================================================
 export const DEFAULT_ACCESSORY_MATERIALS: AccessoryMaterialItem[] = [
-  { id: 'acc-1', name: 'Mica 62-03', unit: 'Cuộn', price: 0, updatedAt: '13/10/2026 08:00', category: 'Mica' },
-  { id: 'acc-2', name: 'Mica 76-03', unit: 'Cuộn', price: 0, updatedAt: '13/10/2026 08:00', category: 'Mica' },
-  { id: 'acc-3', name: 'Mica nhiệt gương 62-04', unit: 'Cuộn', price: 0, updatedAt: '13/10/2026 08:00', category: 'Mica' },
-  { id: 'acc-4', name: 'Mica nhiệt gương 76-04', unit: 'Cuộn', price: 0, updatedAt: '13/10/2026 08:00', category: 'Mica' },
-  { id: 'acc-5', name: 'Mica nhiệt gương 107-04', unit: 'Cuộn', price: 0, updatedAt: '13/10/2026 08:00', category: 'Mica' },
-  { id: 'acc-6', name: 'Mica nguội gương 127-04', unit: 'Cuộn', price: 0, updatedAt: '13/10/2026 08:00', category: 'Mica' },
-  { id: 'acc-7', name: 'Mica nguội 107', unit: 'Cuộn', price: 0, updatedAt: '13/10/2026 08:00', category: 'Mica' },
-  { id: 'acc-8', name: 'Mica nguội 127', unit: 'Cuộn', price: 0, updatedAt: '13/10/2026 08:00', category: 'Mica' },
-  { id: 'acc-9', name: 'Viền 13 li', unit: 'Cuộn', price: 0, updatedAt: '13/10/2026 08:00', category: 'Viền' },
-  { id: 'acc-10', name: 'Viền 10 li', unit: 'Cuộn', price: 0, updatedAt: '13/10/2026 08:00', category: 'Viền' },
-  { id: 'acc-11', name: 'Phào 3412 nâu', unit: 'Cây', price: 0, updatedAt: '13/10/2026 08:00', category: 'Phào' },
-  { id: 'acc-12', name: '2v', unit: 'Cây', price: 0, updatedAt: '13/10/2026 08:00', category: 'Phào' },
-  { id: 'acc-13', name: 'Phào 2525', unit: 'Cây', price: 0, updatedAt: '13/10/2026 08:00', category: 'Phào' },
-  { id: 'acc-14', name: 'Phào 526 (521)', unit: 'Cây', price: 0, updatedAt: '13/10/2026 08:00', category: 'Phào' },
-  { id: 'acc-15', name: 'Phào 602 nâu', unit: 'Cây', price: 0, updatedAt: '13/10/2026 08:00', category: 'Phào' },
-  { id: 'acc-16', name: 'Phào 2009 nâu', unit: 'Cây', price: 0, updatedAt: '13/10/2026 08:00', category: 'Phào' },
-  { id: 'acc-17', name: 'Phào Titan 1', unit: 'Cây', price: 0, updatedAt: '13/10/2026 08:00', category: 'Phào' },
-  { id: 'acc-18', name: 'Phào Titan 2', unit: 'Cây', price: 0, updatedAt: '13/10/2026 08:00', category: 'Phào' },
-  { id: 'acc-19', name: 'Keo sữa', unit: 'Thùng', price: 0, updatedAt: '13/10/2026 08:00', category: 'Keo & Phụ kiện' },
-  { id: 'acc-20', name: 'Chân chống sắt', unit: 'Cái', price: 0, updatedAt: '13/10/2026 08:00', category: 'Keo & Phụ kiện' },
-  { id: 'acc-21', name: 'Ke góc nhựa trắng to', unit: 'Cái', price: 0, updatedAt: '13/10/2026 08:00', category: 'Keo & Phụ kiện' },
-  { id: 'acc-22', name: 'Keo hạt', unit: 'Bao', price: 0, updatedAt: '13/10/2026 08:00', category: 'Keo & Phụ kiện' }
+  { id: 'acc-1', sku: 'PK-01', name: 'Băng Keo Trong 1kg', unit: 'Cuộn', price: 0, updatedAt: '13/10/2026 08:00', category: 'Keo & Phụ kiện' },
+  { id: 'acc-2', sku: 'PK-02', name: 'Màng Pe 5kg', unit: 'Cuộn', price: 0, updatedAt: '13/10/2026 08:00', category: 'Keo & Phụ kiện' },
+  { id: 'acc-3', sku: 'MC-6202', name: 'Mica 62-02', unit: 'Cuộn', price: 0, updatedAt: '13/10/2026 08:00', category: 'Mica' },
+  { id: 'acc-4', sku: 'MC-7602', name: 'Mica 76-02', unit: 'Cuộn', price: 0, updatedAt: '13/10/2026 08:00', category: 'Mica' },
+  { id: 'acc-5', sku: 'MC-62035', name: 'Mica nhiệt gương 62-035', unit: 'Cuộn', price: 0, updatedAt: '13/10/2026 08:00', category: 'Mica' },
+  { id: 'acc-6', sku: 'MC-76035', name: 'Mica nhiệt gương 76-035', unit: 'Cuộn', price: 0, updatedAt: '13/10/2026 08:00', category: 'Mica' },
+  { id: 'acc-7', sku: 'MC-10704', name: 'Mica nhiệt gương 107-04', unit: 'Cuộn', price: 0, updatedAt: '13/10/2026 08:00', category: 'Mica' },
+  { id: 'acc-8', sku: 'MC-12704', name: 'Mica nhiệt gương 127-04', unit: 'Cuộn', price: 0, updatedAt: '13/10/2026 08:00', category: 'Mica' },
+  { id: 'acc-9', sku: 'MC-12702', name: 'Mica nguội 127-02', unit: 'Cuộn', price: 0, updatedAt: '13/10/2026 08:00', category: 'Mica' },
+  { id: 'acc-10', sku: 'MC-12703', name: 'Mica nguội 127 - 03', unit: 'Cuộn', price: 0, updatedAt: '13/10/2026 08:00', category: 'Mica' },
+  { id: 'acc-11', sku: 'VN-12', name: 'Viền 12', unit: 'Cuộn', price: 0, updatedAt: '13/10/2026 08:00', category: 'Viền' },
+  { id: 'acc-12', sku: 'VN-09', name: 'Viền 9', unit: 'Cuộn', price: 0, updatedAt: '13/10/2026 08:00', category: 'Viền' },
+  { id: 'acc-13', sku: 'P-3412', name: 'Phào 3412 nâu', unit: 'Cây', price: 0, updatedAt: '13/10/2026 08:00', category: 'Phào' },
+  { id: 'acc-14', sku: 'P-2V', name: '2v', unit: 'Cây', price: 0, updatedAt: '13/10/2026 08:00', category: 'Phào' },
+  { id: 'acc-15', sku: 'P-2525', name: 'Phào 2525', unit: 'Cây', price: 0, updatedAt: '13/10/2026 08:00', category: 'Phào' },
+  { id: 'acc-16', sku: 'P-526', name: 'Phào 526 (521)', unit: 'Cây', price: 0, updatedAt: '13/10/2026 08:00', category: 'Phào' },
+  { id: 'acc-17', sku: 'P-602', name: 'Phào 602 nâu', unit: 'Cây', price: 0, updatedAt: '13/10/2026 08:00', category: 'Phào' },
+  { id: 'acc-18', sku: 'P-2009', name: 'Phào 2009 nâu', unit: 'Cây', price: 0, updatedAt: '13/10/2026 08:00', category: 'Phào' },
+  { id: 'acc-19', sku: 'P-TT1', name: 'Phào Titan 1', unit: 'Cây', price: 0, updatedAt: '13/10/2026 08:00', category: 'Phào' },
+  { id: 'acc-20', sku: 'P-TT2', name: 'Phào Titan 2', unit: 'Cây', price: 0, updatedAt: '13/10/2026 08:00', category: 'Phào' },
+  { id: 'acc-21', sku: 'PK-03', name: 'Keo sữa', unit: 'Thùng', price: 0, updatedAt: '13/10/2026 08:00', category: 'Keo & Phụ kiện' },
+  { id: 'acc-22', sku: 'PK-04', name: 'Chân chống sắt', unit: 'Cái', price: 0, updatedAt: '13/10/2026 08:00', category: 'Keo & Phụ kiện' },
+  { id: 'acc-23', sku: 'PK-05', name: 'Ke góc nhựa trắng to', unit: 'Cái', price: 0, updatedAt: '13/10/2026 08:00', category: 'Keo & Phụ kiện' },
+  { id: 'acc-24', sku: 'PK-06', name: 'Keo hạt', unit: 'Bao', price: 0, updatedAt: '13/10/2026 08:00', category: 'Keo & Phụ kiện' }
 ];
 
 const ACCESSORY_MATERIALS_LOCAL_KEY = 'tiem_in_194_accessory_materials_v1';
 
+export function generateUniqueAccessorySKU(
+  existingItems: AccessoryMaterialItem[],
+  category: string = 'Khác',
+  name: string = ''
+): string {
+  const takenSKUs = new Set(
+    (existingItems || [])
+      .map(i => (i.sku || '').toUpperCase().trim())
+      .filter(Boolean)
+  );
+
+  let prefix = 'PK';
+  const catLower = (category || '').toLowerCase();
+  if (catLower.includes('mica')) prefix = 'MC';
+  else if (catLower.includes('viền') || catLower.includes('vien')) prefix = 'VN';
+  else if (catLower.includes('phào') || catLower.includes('phao')) prefix = 'P';
+  else if (catLower.includes('keo') || catLower.includes('phụ kiện')) prefix = 'PK';
+
+  const numbersInName = name.replace(/[^0-9]/g, '');
+  if (numbersInName && numbersInName.length >= 2 && numbersInName.length <= 6) {
+    const candidate = `${prefix}-${numbersInName}`;
+    if (!takenSKUs.has(candidate)) return candidate;
+  }
+
+  for (let counter = 1; counter <= 999; counter++) {
+    const candidate = `${prefix}-${String(counter).padStart(2, '0')}`;
+    if (!takenSKUs.has(candidate)) {
+      return candidate;
+    }
+  }
+
+  return `${prefix}-${Date.now().toString().slice(-4)}`;
+}
+
+export function ensureUniqueAccessorySKUs(items: AccessoryMaterialItem[]): AccessoryMaterialItem[] {
+  // Map predefined default SKUs by item ID or name (case-insensitive)
+  const defaultSkuMap = new Map<string, string>();
+  DEFAULT_ACCESSORY_MATERIALS.forEach(def => {
+    if (def.sku) {
+      defaultSkuMap.set(def.id, def.sku);
+      defaultSkuMap.set(def.name.toLowerCase().trim(), def.sku);
+    }
+  });
+
+  const takenSKUs = new Set<string>();
+
+  return (items || []).map(item => {
+    let sku = (item.sku || '').toUpperCase().trim();
+
+    // 1. If SKU is missing, first try looking up standard default SKU by ID or Name
+    if (!sku) {
+      const knownSku = defaultSkuMap.get(item.id) || defaultSkuMap.get((item.name || '').toLowerCase().trim());
+      if (knownSku && !takenSKUs.has(knownSku.toUpperCase())) {
+        sku = knownSku.toUpperCase();
+      }
+    }
+
+    // 2. If still missing or duplicate, generate a unique SKU
+    if (!sku || takenSKUs.has(sku)) {
+      sku = generateUniqueAccessorySKU(items, item.category, item.name);
+    }
+
+    takenSKUs.add(sku);
+    return {
+      ...item,
+      sku
+    };
+  });
+}
+
 export function getLocalAccessoryMaterials(): AccessoryMaterialItem[] {
   try {
     const raw = localStorage.getItem(ACCESSORY_MATERIALS_LOCAL_KEY);
-    if (!raw) return DEFAULT_ACCESSORY_MATERIALS;
+    if (!raw) {
+      const initial = ensureUniqueAccessorySKUs(DEFAULT_ACCESSORY_MATERIALS);
+      saveLocalAccessoryMaterials(initial);
+      return initial;
+    }
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed) && parsed.length > 0) {
       const existingIds = new Set(parsed.map((item: AccessoryMaterialItem) => item.id));
       const missingDefaults = DEFAULT_ACCESSORY_MATERIALS.filter(def => !existingIds.has(def.id));
-      return [...parsed, ...missingDefaults];
+      const merged = [...parsed, ...missingDefaults];
+      const ensured = ensureUniqueAccessorySKUs(merged);
+      saveLocalAccessoryMaterials(ensured);
+      return ensured;
     }
-    return DEFAULT_ACCESSORY_MATERIALS;
+    const initial = ensureUniqueAccessorySKUs(DEFAULT_ACCESSORY_MATERIALS);
+    saveLocalAccessoryMaterials(initial);
+    return initial;
   } catch (e) {
-    return DEFAULT_ACCESSORY_MATERIALS;
+    const fallback = ensureUniqueAccessorySKUs(DEFAULT_ACCESSORY_MATERIALS);
+    saveLocalAccessoryMaterials(fallback);
+    return fallback;
   }
 }
 

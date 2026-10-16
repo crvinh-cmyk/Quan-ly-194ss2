@@ -256,6 +256,7 @@ export type BoardCorePriceMap = Record<string, BoardCorePriceRow>;
 // =================================================================
 export interface AccessoryMaterialItem {
   id: string;               // ID duy nhất (ví dụ: 'acc-1', 'acc-mica-62-03')
+  sku?: string;             // Mã vật tư (SKU) ví dụ: 'MC-6203', 'PK-01', 'P-3412'
   name: string;             // Tên sản phẩm / vật tư phụ kiện
   unit?: string;            // Đơn vị tính (VD: Cuộn, Mét, Cây, Hộp, Chai, Chiếc, Bộ...)
   price: number;            // Đơn giá (đ)

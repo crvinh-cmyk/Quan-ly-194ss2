@@ -247,12 +247,13 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
     try {
       const accItems = getLocalAccessoryMaterials();
       (accItems || []).forEach(acc => {
-        if (!skus.some(s => s.id === acc.id || s.name.toLowerCase() === acc.name.toLowerCase())) {
+        const code = (acc.sku || acc.id).toUpperCase();
+        if (!skus.some(s => s.id === acc.id || s.code.toUpperCase() === code || s.name.toLowerCase() === acc.name.toLowerCase())) {
           skus.push({
             id: acc.id,
-            code: acc.id.toUpperCase(),
+            code: code,
             name: acc.name,
-            unit: 'Cái',
+            unit: acc.unit || 'Cái',
             price: acc.price || 0,
             category: acc.category || 'Phụ kiện',
             source: 'accessory'
@@ -1047,8 +1048,9 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
       if (accItems && accItems.length > 0) {
         const matchedAcc = accItems.find(a => {
           const aId = (a.id || '').toUpperCase().trim();
+          const aSku = (a.sku || '').toUpperCase().trim();
           const aName = (a.name || '').toLowerCase().trim();
-          if (codeClean && (codeClean === aId || codeClean === aId.replace(/-/g, ''))) return true;
+          if (codeClean && (codeClean === aId || codeClean === aSku || codeClean === aId.replace(/-/g, '') || codeClean === aSku.replace(/-/g, ''))) return true;
           if (nameClean && nameClean.length >= 3 && aName && (aName === nameClean || aName.includes(nameClean) || nameClean.includes(aName))) return true;
           return false;
         });

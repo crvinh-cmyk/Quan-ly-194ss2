@@ -17,7 +17,9 @@ import {
   getLocalAccessoryMaterials,
   subscribeAccessoryMaterials,
   saveAccessoryMaterialsToFirestore,
-  DEFAULT_ACCESSORY_MATERIALS
+  DEFAULT_ACCESSORY_MATERIALS,
+  generateUniqueAccessorySKU,
+  ensureUniqueAccessorySKUs
 } from '../services/firestoreService';
 
 interface AccessoryMaterialPriceTableProps {
@@ -27,7 +29,10 @@ interface AccessoryMaterialPriceTableProps {
 export const AccessoryMaterialPriceTable: React.FC<AccessoryMaterialPriceTableProps> = ({
   currentUserEmail
 }) => {
-  const [items, setItems] = useState<AccessoryMaterialItem[]>(() => getLocalAccessoryMaterials());
+  const [items, setItems] = useState<AccessoryMaterialItem[]>(() => {
+    const raw = getLocalAccessoryMaterials();
+    return ensureUniqueAccessorySKUs(raw);
+  });
   const [searchQuery, setSearchQuery] = useState('');
   const [activeCategoryFilter, setActiveCategoryFilter] = useState<string>('all');
   const [toastMessage, setToastMessage] = useState<string>('');
@@ -38,14 +43,32 @@ export const AccessoryMaterialPriceTable: React.FC<AccessoryMaterialPriceTablePr
   const [newPrice, setNewPrice] = useState('');
   const [newUnit, setNewUnit] = useState('');
   const [newCategory, setNewCategory] = useState('Mica');
+  const [newSKU, setNewSKU] = useState('');
+
+  // Auto-generate fresh unique SKU whenever modal opens or category/name changes
+  useEffect(() => {
+    if (isAddingNew) {
+      setNewSKU(generateUniqueAccessorySKU(items, newCategory, newName));
+    }
+  }, [isAddingNew, newCategory, newName]);
 
   // Real-time subscription to Firestore
   useEffect(() => {
     const unsub = subscribeAccessoryMaterials((updated) => {
-      setItems(updated);
+      const ensured = ensureUniqueAccessorySKUs(updated);
+      setItems(ensured);
     });
     return () => unsub();
   }, []);
+
+  // Auto-fill any items missing an SKU in state and persist to Firestore/localStorage
+  useEffect(() => {
+    if (items && items.some(i => !i.sku || !i.sku.trim())) {
+      const ensured = ensureUniqueAccessorySKUs(items);
+      setItems(ensured);
+      saveAccessoryMaterialsToFirestore(ensured, { email: currentUserEmail });
+    }
+  }, [items, currentUserEmail]);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -72,14 +95,17 @@ export const AccessoryMaterialPriceTable: React.FC<AccessoryMaterialPriceTablePr
     return `${d}/${m}/${y} ${h}:${min}`;
   };
 
-  // Update item price or name
-  const handleItemChange = (id: string, field: 'name' | 'price' | 'category' | 'unit', rawVal: string) => {
+  // Update item price or name or sku
+  const handleItemChange = (id: string, field: 'name' | 'price' | 'category' | 'unit' | 'sku', rawVal: string) => {
     const timestamp = getSystemTimestamp();
     const nextItems = items.map(item => {
       if (item.id === id) {
         if (field === 'price') {
           const numPrice = parseNumber(rawVal);
           return { ...item, price: numPrice, updatedAt: timestamp };
+        } else if (field === 'sku') {
+          const formattedSKU = rawVal.toUpperCase().trim();
+          return { ...item, sku: formattedSKU, updatedAt: timestamp };
         } else if (field === 'name') {
           return { ...item, name: rawVal, updatedAt: timestamp };
         } else if (field === 'category') {
@@ -106,8 +132,16 @@ export const AccessoryMaterialPriceTable: React.FC<AccessoryMaterialPriceTablePr
       return;
     }
 
+    let cleanSKU = (newSKU.trim() || generateUniqueAccessorySKU(items, newCategory, cleanName)).toUpperCase();
+
+    // Prevent duplicate SKU
+    if (items.some(i => (i.sku || '').toUpperCase() === cleanSKU)) {
+      cleanSKU = generateUniqueAccessorySKU(items, newCategory, cleanName);
+    }
+
     const newItem: AccessoryMaterialItem = {
       id: `acc-custom-${Date.now()}`,
+      sku: cleanSKU,
       name: cleanName,
       unit: newUnit.trim() || undefined,
       price: parseNumber(newPrice),
@@ -118,11 +152,12 @@ export const AccessoryMaterialPriceTable: React.FC<AccessoryMaterialPriceTablePr
     const nextItems = [newItem, ...items];
     setItems(nextItems);
     saveAccessoryMaterialsToFirestore(nextItems, { email: currentUserEmail });
-    showToast(`Đã thêm vật tư phụ kiện "${cleanName}" vào danh sách!`);
+    showToast(`Đã thêm vật tư phụ kiện "${cleanName}" (Mã: ${cleanSKU}) vào danh sách!`);
 
     setNewName('');
     setNewPrice('');
     setNewUnit('');
+    setNewSKU('');
     setIsAddingNew(false);
   };
 
@@ -158,7 +193,11 @@ export const AccessoryMaterialPriceTable: React.FC<AccessoryMaterialPriceTablePr
   const filteredItems = useMemo(() => {
     return items.filter(i => {
       const matchCat = activeCategoryFilter === 'all' || i.category === activeCategoryFilter;
-      const matchQuery = !searchQuery.trim() || i.name.toLowerCase().includes(searchQuery.toLowerCase().trim()) || (i.category && i.category.toLowerCase().includes(searchQuery.toLowerCase().trim()));
+      const query = searchQuery.toLowerCase().trim();
+      const matchQuery = !query ||
+        i.name.toLowerCase().includes(query) ||
+        (i.sku && i.sku.toLowerCase().includes(query)) ||
+        (i.category && i.category.toLowerCase().includes(query));
       return matchCat && matchQuery;
     });
   }, [items, activeCategoryFilter, searchQuery]);
@@ -218,7 +257,21 @@ export const AccessoryMaterialPriceTable: React.FC<AccessoryMaterialPriceTablePr
 
         {/* Modal/Form thêm vật tư phụ kiện mới */}
         {isAddingNew && (
-          <form onSubmit={handleAddNewItem} className="mt-4 pt-4 border-t border-indigo-200/80 grid grid-cols-1 sm:grid-cols-5 gap-3 bg-white p-4 rounded-xl border shadow-sm">
+          <form onSubmit={handleAddNewItem} className="mt-4 pt-4 border-t border-indigo-200/80 grid grid-cols-1 sm:grid-cols-6 gap-3 bg-white p-4 rounded-xl border shadow-sm">
+            <div>
+              <label className="block text-[11px] font-bold text-indigo-950 mb-1 flex items-center justify-between">
+                <span>Mã Vật Tư (SKU)</span>
+                <span className="text-[10px] text-indigo-600 font-semibold">(Tự động)</span>
+              </label>
+              <input
+                type="text"
+                value={newSKU}
+                onChange={e => setNewSKU(e.target.value.toUpperCase())}
+                placeholder="VD: MC-6202..."
+                className="w-full px-3 py-1.5 bg-indigo-50/50 border border-indigo-200 rounded-lg text-xs font-mono font-black text-indigo-950 focus:bg-white focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-hidden"
+              />
+            </div>
+
             <div>
               <label className="block text-[11px] font-bold text-slate-700 mb-1">
                 Tên Sản Phẩm / Vật Tư <span className="text-rose-500">*</span>
@@ -227,7 +280,7 @@ export const AccessoryMaterialPriceTable: React.FC<AccessoryMaterialPriceTablePr
                 type="text"
                 value={newName}
                 onChange={e => setNewName(e.target.value)}
-                placeholder="VD: Mica nhiệt 80-04, Phào 1502..."
+                placeholder="VD: Mica nhiệt 80-04..."
                 className="w-full px-3 py-1.5 bg-slate-50 border border-slate-300 rounded-lg text-xs focus:bg-white focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-hidden font-medium"
                 required
               />
@@ -258,7 +311,7 @@ export const AccessoryMaterialPriceTable: React.FC<AccessoryMaterialPriceTablePr
                 type="text"
                 value={newUnit}
                 onChange={e => setNewUnit(e.target.value)}
-                placeholder="VD: Cuộn, Cây, Hộp, Mét..."
+                placeholder="VD: Cuộn, Cây, Hộp..."
                 className="w-full px-3 py-1.5 bg-slate-50 border border-slate-300 rounded-lg text-xs focus:bg-white focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-hidden font-medium"
               />
             </div>
@@ -335,7 +388,10 @@ export const AccessoryMaterialPriceTable: React.FC<AccessoryMaterialPriceTablePr
             <thead>
               <tr className="bg-slate-100/80 border-b border-slate-200 text-[11px] font-black uppercase text-slate-700 tracking-wider">
                 <th className="py-3 px-3 text-center w-12 bg-slate-200/60">STT</th>
-                <th className="py-3 px-4 min-w-[240px]">Tên Sản Phẩm / Vật Tư Phụ Kiện</th>
+                <th className="py-3 px-3 text-center w-36 bg-indigo-50/70 text-indigo-950 border-x border-slate-200 font-black">
+                  Mã Vật Tư (SKU)
+                </th>
+                <th className="py-3 px-4 min-w-[220px]">Tên Sản Phẩm / Vật Tư Phụ Kiện</th>
                 <th className="py-3 px-3 text-center w-36">Nhóm Vật Tư</th>
                 <th className="py-3 px-3 text-center w-32">Đơn Vị Tính</th>
                 <th className="py-3 px-4 text-right w-44">Đơn Giá (đ)</th>
@@ -346,7 +402,7 @@ export const AccessoryMaterialPriceTable: React.FC<AccessoryMaterialPriceTablePr
             <tbody className="divide-y divide-slate-200 text-xs font-medium">
               {filteredItems.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="py-8 text-center text-slate-400">
+                  <td colSpan={8} className="py-8 text-center text-slate-400">
                     <div className="flex flex-col items-center justify-center gap-2">
                       <AlertCircle className="w-6 h-6 text-slate-300" />
                       <span>Không tìm thấy vật tư phụ kiện phù hợp</span>
@@ -364,7 +420,19 @@ export const AccessoryMaterialPriceTable: React.FC<AccessoryMaterialPriceTablePr
                       {index + 1}
                     </td>
 
-                    {/* Cột 1: Tên sản phẩm / vật tư (Cho phép bấm vào chỉnh sửa trực tiếp) */}
+                    {/* Cột Mã Vật Tư (SKU) - Nằm giữa STT và Tên sản phẩm */}
+                    <td className="py-2.5 px-3 text-center bg-indigo-50/20 border-x border-slate-100">
+                      <input
+                        type="text"
+                        value={item.sku || ''}
+                        onChange={e => handleItemChange(item.id, 'sku', e.target.value)}
+                        placeholder="Nhập SKU..."
+                        className="w-full max-w-[120px] mx-auto px-2 py-1 text-center font-mono font-extrabold text-xs text-indigo-950 bg-white border border-indigo-200 hover:border-indigo-400 focus:border-indigo-600 focus:bg-indigo-50/30 focus:ring-1 focus:ring-indigo-500 rounded-lg outline-hidden transition shadow-2xs"
+                        title="Mã SKU duy nhất của vật tư phụ kiện (Nhấp vào để sửa thủ công)"
+                      />
+                    </td>
+
+                    {/* Cột 1: Tên sản phẩm / vật tư */}
                     <td className="py-2.5 px-4">
                       <div className="flex items-center gap-2">
                         <input
