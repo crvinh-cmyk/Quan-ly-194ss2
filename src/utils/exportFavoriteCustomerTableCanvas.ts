@@ -125,7 +125,7 @@ export async function generateFavoriteCustomerCanvas(
   const rowH = 95;
   const tableH = headerH + rowH;
 
-  const colW = [280, 230, 230, 210, 210, 250];
+  const colW = [240, 250, 250, 200, 200, 270];
   const colX = [tableX];
   for (let i = 0; i < colW.length; i++) {
     colX.push(colX[i] + colW[i]);
@@ -157,24 +157,42 @@ export async function generateFavoriteCustomerCanvas(
 
   // Header Texts
   ctx.fillStyle = "#1e293b";
-  ctx.font = "800 20px " + FONT_SANS;
+  ctx.font = "800 17px " + FONT_SANS;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
 
-  const headers = [
+  const discountTitle = data.discountLabel || "Chiết khấu Thanh Toán";
+
+  const renderHeaderCell = (text: string, colIndex: number) => {
+    const cx = colX[colIndex] + colW[colIndex] / 2;
+    const cy = curY + headerH / 2;
+
+    if (text === "Tổng tiền trong tháng") {
+      ctx.fillText("Tổng tiền", cx, cy - 11);
+      ctx.fillText("trong tháng", cx, cy + 11);
+    } else if (text === "Chiết khấu Thanh Toán") {
+      ctx.fillText("Chiết khấu", cx, cy - 11);
+      ctx.fillText("Thanh Toán", cx, cy + 11);
+    } else if (text === "Hỗ trợ vận chuyển") {
+      ctx.fillText("Hỗ trợ", cx, cy - 11);
+      ctx.fillText("vận chuyển", cx, cy + 11);
+    } else if (text === "Cần Thanh Toán") {
+      ctx.fillText("Cần Thanh Toán", cx, cy);
+    } else {
+      ctx.fillText(text, cx, cy);
+    }
+  };
+
+  const rawHeaders = [
     "khách hàng",
     "Tổng tiền trong tháng",
-    data.discountLabel || "Chiết khấu Thanh Toán",
+    discountTitle,
     "Còn lại",
     "Nợ cũ",
     "Cần Thanh Toán",
   ];
 
-  for (let i = 0; i < headers.length; i++) {
-    const cx = colX[i] + colW[i] / 2;
-    const cy = curY + headerH / 2;
-    ctx.fillText(headers[i], cx, cy);
-  }
+  rawHeaders.forEach((text, i) => renderHeaderCell(text, i));
 
   // 2. Data Row
   const rowY = curY + headerH;
