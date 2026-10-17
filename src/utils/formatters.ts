@@ -168,3 +168,64 @@ export function numberToVietnameseWords(amount: number): string {
 // Aliases để tương thích với bất kỳ file nào gọi readMoney hoặc numberToWords
 export const readMoney = numberToVietnameseWords;
 export const numberToWords = numberToVietnameseWords;
+
+/**
+ * Lấy tên hiển thị trang trọng cho khách hàng khi chụp ảnh hóa đơn / xuất hóa đơn gửi khách.
+ * Ẩn bỏ hoàn toàn 2 từ "Khách Lẻ" và "Freelance" (hoặc Frelance) theo yêu cầu của tiệm.
+ * Nếu có tên khách lẻ / freelance riêng (guestName hoặc được viết sau dấu gạch), chỉ hiện tên riêng đó (VD: 'Anh Tuấn', 'Chị Mai').
+ * Nếu không có tên riêng, hiển thị 'Quý Khách' thay vì hiện 'Khách Lẻ' hoặc 'Freelance'.
+ */
+export function getCustomerFacingName(order?: { customerName?: string; guestName?: string } | null): string {
+  if (!order) return 'Quý Khách';
+
+  // 1. Ưu tiên guestName nếu có
+  if (order.guestName && order.guestName.trim()) {
+    let clean = order.guestName.trim();
+    clean = clean
+      .replace(/^(?:khách\s*lẻ|khach\s*le|freelance|frelance|thợ\s*freelance|vãng\s*lai)\s*[-:–—\s(]*/gi, '')
+      .replace(/\s*[-:–—\s)]*(?:khách\s*lẻ|khach\s*le|freelance|frelance|thợ\s*freelance|vãng\s*lai)\s*$/gi, '')
+      .replace(/[()]/g, '')
+      .trim();
+    if (clean && !/^(?:khách\s*lẻ|khach\s*le|freelance|frelance|thợ\s*freelance|vãng\s*lai)$/i.test(clean)) {
+      return clean;
+    }
+  }
+
+  // 2. Nếu không có guestName hoặc guestName rỗng, xử lý từ customerName
+  let rawName = (order.customerName || '').trim();
+  if (!rawName) return 'Quý Khách';
+
+  // Bóc tách nếu tên lưu dạng "Khách Lẻ - Anh Tuấn" hoặc "Freelance - Chị Lan" hoặc "Khách Lẻ (Anh Tuấn)"
+  const prefixMatch = rawName.match(/^(?:khách\s*lẻ|khach\s*le|freelance|frelance|thợ\s*freelance|khách\s*vãng\s*lai)\s*[-:–—\s(]+([^)]+)\)?$/i);
+  if (prefixMatch && prefixMatch[1] && prefixMatch[1].trim()) {
+    const extracted = prefixMatch[1].trim();
+    if (!/^(?:khách\s*lẻ|khach\s*le|freelance|frelance|thợ\s*freelance|khách\s*vãng\s*lai)$/i.test(extracted)) {
+      return extracted;
+    }
+  }
+
+  // Bóc tách nếu tên có dạng "Tên (Khách Lẻ...)" ví dụ: "Chị Mai Hương (Khách Lẻ In Ảnh Gia Đình)"
+  const suffixInParens = rawName.match(/^([^(]+)\s*\((?:khách\s*lẻ|khach\s*le|freelance|frelance)[^)]*\)$/i);
+  if (suffixInParens && suffixInParens[1] && suffixInParens[1].trim()) {
+    const extracted = suffixInParens[1].trim();
+    if (!/^(?:khách\s*lẻ|khach\s*le|freelance|frelance)$/i.test(extracted)) {
+      return extracted;
+    }
+  }
+
+  // Lọc sạch các từ khóa "khách lẻ", "freelance"
+  let cleanName = rawName
+    .replace(/\s*\((?:khách\s*lẻ|khach\s*le|freelance|frelance)[^)]*\)/gi, '')
+    .replace(/^(?:khách\s*lẻ|khach\s*le|freelance|frelance)\s*[-:–—\s(]*/gi, '')
+    .replace(/\s*[-:–—\s)]*(?:khách\s*lẻ|khach\s*le|freelance|frelance)\s*$/gi, '')
+    .replace(/[()]/g, '')
+    .trim();
+
+  // Nếu chuỗi còn lại rỗng hoặc chỉ còn đúng từ Khách Lẻ / Freelance
+  if (!cleanName || /^(?:khách\s*lẻ|khach\s*le|freelance|frelance)$/i.test(cleanName)) {
+    return 'Quý Khách';
+  }
+
+  return cleanName;
+}
+

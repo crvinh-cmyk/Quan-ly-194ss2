@@ -816,9 +816,11 @@ export default function App() {
           <CustomerManagementView
             customers={customers}
             orders={orders}
+            workshop={workshop}
             onAddCustomer={handleAddCustomer}
             onUpdateCustomer={handleUpdateCustomer}
             onRecordDebtPayment={handleRecordDebtPayment}
+            onPrintOrder={(order) => setActivePrintOrder(order)}
             onViewCustomerOrders={(cId) => {
               handleSelectTab('orders');
             }}

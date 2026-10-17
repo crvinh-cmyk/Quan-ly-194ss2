@@ -993,7 +993,7 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
         const rSize = (row.size || key).toUpperCase().replace(/\s+/g, '');
         const rDigits = rSize.match(/\d+/g) || [];
 
-        if (rDigits.length >= 2) {
+        if (rDigits.length >= 2 && rDigits[0] && rDigits[1]) {
           const d1 = rDigits[0];
           const d2 = rDigits[1];
           const combo1 = `${d1}${d2}`;
@@ -1144,7 +1144,7 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
         ...updated[idx],
         materialId: sku.id,
         materialCode: sku.code,
-        materialName: sku.name || lookupRes.matchedName, // ALWAYS keep selected SKU's name!
+        materialName: sku.name || lookupRes.matchedName || sku.code || 'Vật tư', // ALWAYS keep selected SKU's name!
         unit: sku.unit || lookupRes.matchedUnit || (isInk ? 'Bình' : 'Tấm'),
         costPrice: cp,
         totalCost: q * cp

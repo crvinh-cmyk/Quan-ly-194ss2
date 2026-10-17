@@ -1,5 +1,5 @@
 import { Order, WorkshopInfo } from '../types';
-import { formatCurrency, formatDateVN, numberToVietnameseWords } from './formatters';
+import { formatCurrency, formatDateVN, numberToVietnameseWords, getCustomerFacingName } from './formatters';
 
 // Premium typography with full Vietnamese Unicode charset support
 const FONT_SANS = '"Be Vietnam Pro", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif';
@@ -196,7 +196,7 @@ export async function generateInvoicePortraitCanvas(order: Order, workshop: Work
   ctx.fillText('Khách hàng / Studio đối tác:', padX + 35, custBoxY + 48);
   ctx.fillStyle = '#0f172a';
   ctx.font = `800 38px ${FONT_SANS}`;
-  ctx.fillText(order.customerName, padX + 35, custBoxY + 98);
+  ctx.fillText(getCustomerFacingName(order), padX + 35, custBoxY + 98);
 
   // Phone
   ctx.fillStyle = '#64748b';

@@ -314,25 +314,25 @@ export const DEFAULT_CUSTOMERS: Customer[] = [
   },
   {
     id: 'c4',
-    name: 'Thợ Chụp Tự Do Quốc Dũng',
-    phone: '0904 991 322',
-    studioName: 'Freelancer Quốc Dũng',
-    address: 'Ngõ 205 Giải Phóng, Hà Nội',
-    initialDebt: 350000,
+    name: 'Freelance',
+    phone: '',
+    studioName: 'Freelance / Thợ tự do',
+    address: 'Vãng lai tại tiệm',
+    initialDebt: 0,
     customerType: 'Freelance',
-    notes: 'Chuyên chụp tiệc và phóng sự cưới',
+    notes: 'Tệp khách Freelance vãng lai ghé tiệm in 1-2 lần (có thể ghi tên riêng từng người khi lên đơn)',
     createdAt: '2026-04-12',
-    initialYearlyRevenue: 2000000
+    initialYearlyRevenue: 0
   },
   {
     id: 'c5',
-    name: 'Chị Mai Hương (Khách Lẻ In Ảnh Gia Đình)',
-    phone: '0936 128 900',
-    studioName: 'Khách Lẻ',
-    address: 'Khu Đô Thị Linh Đàm, Hoàng Mai, HN',
+    name: 'Khách Lẻ',
+    phone: '',
+    studioName: 'Khách lẻ vãng lai',
+    address: 'Vãng lai tại tiệm',
     initialDebt: 0,
     customerType: 'Khách Lẻ',
-    notes: 'In ảnh kỷ niệm gia đình và thôi nôi',
+    notes: 'Tệp khách lẻ in ảnh gia đình, tiệc vãng lai ghé tiệm 1-2 lần (có thể ghi tên riêng từng người khi lên đơn)',
     createdAt: '2026-05-20',
     initialYearlyRevenue: 0
   }

@@ -1,12 +1,12 @@
 import React, { useState, useMemo } from 'react';
 import { Customer, Order, ProductCategory, WorkshopInfo } from '../types';
 import { FavoriteCustomersSection } from './FavoriteCustomersSection';
-import { formatCurrency, formatDateVN } from '../utils/formatters';
+import { formatCurrency, formatDateVN, getCustomerFacingName } from '../utils/formatters';
 import { calculateCustomerDebt } from '../utils/storage';
 import {
   Users, Plus, Search, DollarSign, Phone, MapPin, CheckCircle2, History, Star,
   AlertCircle, Building2, Camera, User, Award, Crown, TrendingUp, Calendar,
-  ArrowUpDown, Sparkles, Edit3
+  ArrowUpDown, Sparkles, Edit3, Printer, Eye, X, ExternalLink
 } from 'lucide-react';
 import { MoneyInput } from './MoneyInput';
 
@@ -18,6 +18,7 @@ interface CustomerManagementViewProps {
   onUpdateCustomer: (customer: Customer) => void;
   onRecordDebtPayment: (customerId: string, amount: number, note: string) => void;
   onViewCustomerOrders: (customerId: string) => void;
+  onPrintOrder?: (order: Order) => void;
 }
 
 export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
@@ -27,7 +28,8 @@ export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
   onAddCustomer,
   onUpdateCustomer,
   onRecordDebtPayment,
-  onViewCustomerOrders
+  onViewCustomerOrders,
+  onPrintOrder
 }) => {
   const [activeSubTab, setActiveSubTab] = useState<'all' | 'favorites'>('all');
   const [toastMsg, setToastMsg] = useState<string>('');
@@ -44,6 +46,9 @@ export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
   // Modal create/edit customer
   const [isCustomerModalOpen, setIsCustomerModalOpen] = useState(false);
   const [editingCust, setEditingCust] = useState<Customer | null>(null);
+
+  // Modal viewing customer orders
+  const [viewingOrdersCustomer, setViewingOrdersCustomer] = useState<Customer | null>(null);
   const [name, setName] = useState('');
   const [studioName, setStudioName] = useState('');
   const [customerType, setCustomerType] = useState<ProductCategory>('GIÁ STUDIO');
@@ -302,6 +307,20 @@ export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
     return customersWithMetrics.find(c => c.id === editingCust.id) || null;
   }, [editingCust, customersWithMetrics]);
 
+  // Orders belonging to currently viewed customer
+  const viewingCustomerOrders = useMemo(() => {
+    if (!viewingOrdersCustomer) return [];
+    return orders
+      .filter(o => o.customerId === viewingOrdersCustomer.id || (
+        (viewingOrdersCustomer.name.toLowerCase() === 'khách lẻ' || viewingOrdersCustomer.customerType === 'Khách Lẻ') &&
+        (o.customerName.toLowerCase().startsWith('khách lẻ') || o.customerName.toLowerCase().startsWith('khach le'))
+      ) || (
+        (viewingOrdersCustomer.name.toLowerCase() === 'freelance' || viewingOrdersCustomer.customerType === 'Freelance') &&
+        (o.customerName.toLowerCase().startsWith('freelance') || o.customerName.toLowerCase().startsWith('frelance'))
+      ))
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime() || b.createdAt.localeCompare(a.createdAt));
+  }, [viewingOrdersCustomer, orders]);
+
   return (
     <div className="space-y-4">
       {/* Header Bar */}
@@ -552,6 +571,19 @@ export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
                         {cust.studioName}
                       </span>
                     )}
+
+                    {/* Ghi chú tệp khách vãng lai */}
+                    {(cust.customerType === 'Khách Lẻ' || cust.customerType === 'Freelance' || cust.name.toLowerCase() === 'khách lẻ' || cust.name.toLowerCase() === 'freelance') && (
+                      <div className="mt-2 p-2 rounded-xl bg-amber-50/70 border border-amber-200/90 text-[11px] text-amber-950">
+                        <div className="flex items-center gap-1.5 font-bold text-amber-900">
+                          <Users className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                          <span>Tệp khách vãng lai (không tạo khách mới)</span>
+                        </div>
+                        <p className="text-[10px] text-slate-600 mt-0.5 leading-relaxed">
+                          💡 Mỗi đơn ghi tên riêng từng người (VD: Anh Tuấn, Chị Mai). Sổ nợ & hóa đơn nội bộ hiện rõ tên riêng, khi chụp gửi khách tự động ẩn 2 từ "{cust.customerType}".
+                        </p>
+                      </div>
+                    )}
                   </div>
 
                   <div className="text-right shrink-0">
@@ -652,11 +684,12 @@ export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
                   </button>
                   <span className="text-slate-300">•</span>
                   <button
-                    onClick={() => onViewCustomerOrders(cust.id)}
-                    className="text-xs text-amber-700 hover:text-amber-800 font-semibold cursor-pointer"
-                    title="Xem tất cả đơn hàng đã đặt của khách này"
+                    onClick={() => setViewingOrdersCustomer(cust)}
+                    className="text-xs text-amber-700 hover:text-amber-800 font-semibold cursor-pointer flex items-center gap-1"
+                    title="Xem chi tiết các đơn hàng của khách này"
                   >
-                    Xem đơn ({cust.ordersCount})
+                    <Eye className="w-3.5 h-3.5" />
+                    <span>Xem đơn ({cust.ordersCount})</span>
                   </button>
                 </div>
 
@@ -1018,6 +1051,180 @@ export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
                 className="px-4 py-1.5 text-xs font-bold text-slate-950 bg-amber-500 hover:bg-amber-400 rounded-xl shadow-xs cursor-pointer"
               >
                 Lưu Doanh Thu
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Xem Danh Sách Đơn Hàng Của Khách Hàng (Đặc biệt cho Khách Lẻ & Freelance) */}
+      {viewingOrdersCustomer && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/75 backdrop-blur-xs overflow-y-auto">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-4xl w-full max-h-[92vh] flex flex-col overflow-hidden border border-slate-200 animate-in fade-in zoom-in-95 duration-150">
+            {/* Modal Header */}
+            <div className="p-4 bg-slate-900 text-white flex items-center justify-between gap-3 border-b border-slate-800">
+              <div className="flex items-center gap-2.5">
+                <span className="p-2 bg-amber-500/20 text-amber-400 rounded-xl">
+                  {viewingOrdersCustomer.customerType === 'Freelance' ? <Camera className="w-5 h-5" /> : <Users className="w-5 h-5" />}
+                </span>
+                <div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h3 className="font-extrabold text-sm sm:text-base">
+                      Sổ Đơn & Chi Tiết: {viewingOrdersCustomer.name}
+                    </h3>
+                    {viewingOrdersCustomer.studioName && (
+                      <span className="text-xs text-slate-300 bg-slate-800 px-2 py-0.5 rounded-md">
+                        {viewingOrdersCustomer.studioName}
+                      </span>
+                    )}
+                    {(viewingOrdersCustomer.customerType === 'Khách Lẻ' || viewingOrdersCustomer.customerType === 'Freelance') && (
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500 text-slate-950">
+                        👥 Tệp Vãng Lai
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Tổng: <strong className="text-slate-200">{viewingCustomerOrders.length} đơn</strong> • Chi tiêu:{' '}
+                    <strong className="text-amber-300 font-mono">
+                      {formatCurrency(viewingCustomerOrders.reduce((sum, o) => sum + (o.subtotal - (o.discount || 0)), 0))}
+                    </strong> • Nợ hiện tại:{' '}
+                    <strong className="text-red-400 font-mono">
+                      {formatCurrency(calculateCustomerDebt(viewingOrdersCustomer.id, orders, customers))}
+                    </strong>
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setViewingOrdersCustomer(null)}
+                className="p-1.5 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Explanatory Notice for Walk-in Categories */}
+            {(viewingOrdersCustomer.customerType === 'Khách Lẻ' || viewingOrdersCustomer.customerType === 'Freelance') && (
+              <div className="p-3 bg-amber-50 border-b border-amber-200 text-xs text-amber-950 flex items-start gap-2">
+                <Sparkles className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                <div className="leading-relaxed">
+                  <strong>Cơ chế quản lý khách vãng lai:</strong> Mọi khách lẻ và freelance ghé tiệm 1-2 lần đều được lưu tập trung vào mục này mà không cần tạo khách mới. Khi lập hóa đơn, tên riêng (VD: <em>Anh Tuấn, Chị Mai</em>) được ghi lại: <strong>nội bộ lưu rõ "Khách Lẻ/Freelance - Tên riêng"</strong>, nhưng <strong>khi chụp ảnh gửi khách đã tự động ẩn 2 từ này</strong>.
+                </div>
+              </div>
+            )}
+
+            {/* Orders Table List */}
+            <div className="p-4 overflow-y-auto flex-1 divide-y divide-slate-100">
+              {viewingCustomerOrders.length > 0 ? (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs text-left">
+                    <thead>
+                      <tr className="border-b border-slate-200 text-slate-500 bg-slate-50 text-[11px] uppercase font-bold">
+                        <th className="py-2.5 px-3">Mã đơn & Ngày</th>
+                        <th className="py-2.5 px-3">Tên lưu nội bộ</th>
+                        <th className="py-2.5 px-3">Tên khi chụp gửi khách</th>
+                        <th className="py-2.5 px-3">Sản phẩm</th>
+                        <th className="py-2.5 px-3 text-right">Tổng tiền</th>
+                        <th className="py-2.5 px-3 text-right">Còn nợ</th>
+                        <th className="py-2.5 px-3 text-center">Thao tác</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {viewingCustomerOrders.map((ord) => {
+                        const facingName = getCustomerFacingName(ord);
+                        return (
+                          <tr key={ord.id} className="hover:bg-amber-50/40 transition">
+                            <td className="py-3 px-3">
+                              <span className="font-mono font-bold text-slate-900 block">
+                                {ord.orderNumber}
+                              </span>
+                              <span className="text-[11px] text-slate-500">
+                                {formatDateVN(ord.date)}
+                              </span>
+                            </td>
+                            <td className="py-3 px-3">
+                              <span className="font-bold text-slate-900 block">
+                                {ord.customerName}
+                              </span>
+                              {ord.customerPhone && (
+                                <span className="text-[11px] text-slate-500 font-mono">
+                                  {ord.customerPhone}
+                                </span>
+                              )}
+                            </td>
+                            <td className="py-3 px-3">
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-800 border border-emerald-200 font-bold text-xs">
+                                <span>{facingName}</span>
+                              </span>
+                              <span className="block text-[10px] text-emerald-600 mt-0.5">
+                                (Đã ẩn Khách Lẻ/Freelance)
+                              </span>
+                            </td>
+                            <td className="py-3 px-3 max-w-[200px]">
+                              <div className="truncate text-slate-700">
+                                {ord.items.map(it => `${it.productCode} (${it.size}) x${it.quantity}`).join(', ')}
+                              </div>
+                            </td>
+                            <td className="py-3 px-3 text-right font-mono font-bold text-slate-900">
+                              {formatCurrency(ord.subtotal - (ord.discount || 0))}
+                            </td>
+                            <td className="py-3 px-3 text-right font-mono font-bold">
+                              {ord.totalDue > 0 ? (
+                                <span className="text-red-600">{formatCurrency(ord.totalDue)}</span>
+                              ) : (
+                                <span className="text-emerald-600">Đã xong</span>
+                              )}
+                            </td>
+                            <td className="py-3 px-3 text-center">
+                              {onPrintOrder && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setViewingOrdersCustomer(null);
+                                    onPrintOrder(ord);
+                                  }}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-[11px] shadow-2xs transition cursor-pointer"
+                                  title="Mở cửa sổ in phiếu & chụp ảnh gửi khách"
+                                >
+                                  <Printer className="w-3 h-3" />
+                                  <span>In / Chụp ảnh</span>
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="p-8 text-center text-slate-500 text-xs">
+                  Chưa có đơn hàng nào thuộc khách này.
+                </div>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-3 bg-slate-50 border-t border-slate-200 flex items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  const targetId = viewingOrdersCustomer.id;
+                  setViewingOrdersCustomer(null);
+                  onViewCustomerOrders(targetId);
+                }}
+                className="text-xs font-bold text-amber-700 hover:text-amber-800 flex items-center gap-1 cursor-pointer"
+              >
+                <ExternalLink className="w-3.5 h-3.5" />
+                <span>Xem trên Sổ Đơn Hàng</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setViewingOrdersCustomer(null)}
+                className="px-4 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-xs font-bold transition cursor-pointer"
+              >
+                Đóng
               </button>
             </div>
           </div>

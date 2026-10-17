@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Order, WorkshopInfo } from '../types';
-import { formatCurrency, formatDateVN, numberToVietnameseWords } from '../utils/formatters';
+import { formatCurrency, formatDateVN, numberToVietnameseWords, getCustomerFacingName } from '../utils/formatters';
 import {
   Printer, X, Download, Copy, Phone, MapPin,
   Building2, Image, FileText, CheckCircle2, Loader2, Sparkles, ExternalLink, Clock
@@ -394,7 +394,7 @@ export const PrintInvoiceModal: React.FC<PrintInvoiceModalProps> = ({ order, wor
         await document.fonts.ready;
       }
       const canvas = await generateInvoicePortraitCanvas(order, workshop);
-      const cleanCustomer = (order.customerName || 'Khach').replace(/[^a-zA-Z0-9\u00C0-\u1EF9]/g, '_');
+      const cleanCustomer = (getCustomerFacingName(order) || 'Khach').replace(/[^a-zA-Z0-9\u00C0-\u1EF9]/g, '_');
       const filename = `Phieu_194_${order.orderNumber}_${cleanCustomer}_Doc.jpg`;
       const dataUrl = downloadCanvasAsJPG(canvas, filename);
 
@@ -435,6 +435,9 @@ export const PrintInvoiceModal: React.FC<PrintInvoiceModalProps> = ({ order, wor
               </div>
               <p className="text-xs text-slate-400 truncate max-w-xs sm:max-w-md">
                 Khách: <strong className="text-slate-200">{order.customerName}</strong>
+                <span className="ml-2 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                  Tên gửi khách: {getCustomerFacingName(order)}
+                </span>
               </p>
             </div>
           </div>
@@ -639,9 +642,12 @@ export const PrintInvoiceModal: React.FC<PrintInvoiceModalProps> = ({ order, wor
                         {order.orderNumber}
                       </span>
                     </div>
-                    <p className="text-xs text-slate-400">
-                      Khách hàng: <strong className="text-slate-200">{order.customerName}</strong>
-                      {cleanCustomerPhone && <span className="ml-2 font-mono text-slate-300">({cleanCustomerPhone})</span>}
+                    <p className="text-xs text-slate-400 flex items-center gap-2 flex-wrap mt-0.5">
+                      <span>Nội bộ: <strong className="text-slate-200">{order.customerName}</strong></span>
+                      <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                        Tên trên ảnh gửi khách: "{getCustomerFacingName(order)}"
+                      </span>
+                      {cleanCustomerPhone && <span className="font-mono text-slate-300">({cleanCustomerPhone})</span>}
                     </p>
                   </div>
                 </div>
@@ -847,7 +853,7 @@ export const PrintInvoiceModal: React.FC<PrintInvoiceModalProps> = ({ order, wor
             <div className={`bg-slate-50 ${isA5 ? 'p-2.5 mb-3 gap-1.5 text-xs' : 'p-3.5 mb-4 gap-2 text-xs'} rounded-lg border border-slate-200 grid grid-cols-1 sm:grid-cols-2`}>
               <div>
                 <p className="text-slate-500 text-[11px]">Khách hàng / Studio đối tác:</p>
-                <p className="font-bold text-slate-950 text-xs sm:text-sm">{order.customerName}</p>
+                <p className="font-bold text-slate-950 text-xs sm:text-sm">{getCustomerFacingName(order)}</p>
               </div>
               <div>
                 <p className="text-slate-500 text-[11px]">Số điện thoại liên hệ:</p>
@@ -996,7 +1002,7 @@ export const PrintInvoiceModal: React.FC<PrintInvoiceModalProps> = ({ order, wor
               <div>
                 <p className="font-bold text-slate-800 uppercase">Khách hàng</p>
                 <p className="text-[10px] text-slate-400 italic mb-10 sm:mb-12">(Ký, ghi rõ họ tên)</p>
-                <p className="font-bold text-slate-700">{order.customerName}</p>
+                <p className="font-bold text-slate-700">{getCustomerFacingName(order)}</p>
               </div>
               <div>
                 <p className="font-bold text-slate-800 uppercase">Người giao nhận</p>

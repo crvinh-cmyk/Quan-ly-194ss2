@@ -89,6 +89,7 @@ export interface Order {
   date: string; // YYYY-MM-DD
   customerId: string;
   customerName: string;
+  guestName?: string; // Tên riêng của khách lẻ hoặc freelance vãng lai (VD: 'Anh Tuấn', 'Chị Mai'...)
   customerPhone: string;
   customerAddress?: string;
   items: OrderItem[];

@@ -46,7 +46,7 @@ export const OrderList: React.FC<OrderListProps> = ({
       if (searchTerm) {
         const q = searchTerm.toLowerCase();
         const matchNumber = order.orderNumber.toLowerCase().includes(q);
-        const matchCustomer = order.customerName.toLowerCase().includes(q);
+        const matchCustomer = order.customerName.toLowerCase().includes(q) || (order.guestName && order.guestName.toLowerCase().includes(q));
         const matchPhone = order.customerPhone.includes(q);
         const matchItem = order.items.some(it =>
           it.productCode.toLowerCase().includes(q) ||
@@ -172,7 +172,15 @@ export const OrderList: React.FC<OrderListProps> = ({
 
                     {/* Customer */}
                     <td className="py-3 px-3">
-                      <div className="font-bold text-slate-900">{order.customerName}</div>
+                      <div className="font-bold text-slate-900 flex items-center gap-1.5 flex-wrap">
+                        <span>{order.customerName}</span>
+                      </div>
+                      {order.guestName && (
+                        <div className="text-[10px] font-semibold text-emerald-800 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200 inline-flex items-center gap-1 mt-0.5">
+                          <span>Tên gửi khách:</span>
+                          <span className="font-bold underline">{order.guestName}</span>
+                        </div>
+                      )}
                       <div className="text-[11px] text-slate-500 font-mono">{order.customerPhone || 'Chưa có SĐT'}</div>
                     </td>
 

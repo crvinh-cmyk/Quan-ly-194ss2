@@ -211,19 +211,76 @@ export function getStoredCustomers(): Customer[] {
     }
     let parsed: Customer[] = JSON.parse(raw);
     let updated = false;
+
+    // Migrate existing customers
     parsed = parsed.map(c => {
+      if (c.id === 'c4' && (c.name.includes('Quốc Dũng') || c.name.includes('Thợ Chụp'))) {
+        updated = true;
+        return {
+          ...c,
+          name: 'Freelance',
+          studioName: 'Freelance / Thợ tự do',
+          customerType: 'Freelance' as const,
+          notes: 'Tệp khách Freelance vãng lai ghé tiệm in 1-2 lần (có thể ghi tên riêng từng người khi lên đơn)'
+        };
+      }
+      if (c.id === 'c5' && c.name.includes('Mai Hương')) {
+        updated = true;
+        return {
+          ...c,
+          name: 'Khách Lẻ',
+          studioName: 'Khách lẻ vãng lai',
+          customerType: 'Khách Lẻ' as const,
+          notes: 'Tệp khách lẻ in ảnh gia đình, tiệc vãng lai ghé tiệm 1-2 lần (có thể ghi tên riêng từng người khi lên đơn)'
+        };
+      }
       if (!c.customerType) {
         updated = true;
-        if (c.studioName?.includes('Freelancer') || c.name.includes('Thợ')) {
+        if (c.studioName?.includes('Freelance') || c.name.toLowerCase().includes('freelance') || c.name.includes('Thợ')) {
           return { ...c, customerType: 'Freelance' as const };
         }
-        if (c.studioName?.includes('Khách Lẻ') || c.name.includes('Khách Lẻ')) {
+        if (c.studioName?.includes('Khách Lẻ') || c.name.toLowerCase().includes('khách lẻ')) {
           return { ...c, customerType: 'Khách Lẻ' as const };
         }
         return { ...c, customerType: 'GIÁ STUDIO' as const };
       }
       return c;
     });
+
+    // Ensure dedicated standard Freelance item exists
+    if (!parsed.some(c => c.name.toLowerCase() === 'freelance' || c.id === 'c4')) {
+      parsed.push({
+        id: 'cust-freelance',
+        name: 'Freelance',
+        phone: '',
+        studioName: 'Freelance / Thợ tự do',
+        address: 'Vãng lai tại tiệm',
+        initialDebt: 0,
+        customerType: 'Freelance',
+        notes: 'Tệp khách Freelance vãng lai ghé tiệm in 1-2 lần (có thể ghi tên riêng từng người khi lên đơn)',
+        createdAt: '2026-04-12',
+        initialYearlyRevenue: 0
+      });
+      updated = true;
+    }
+
+    // Ensure dedicated standard Khách Lẻ item exists
+    if (!parsed.some(c => c.name.toLowerCase() === 'khách lẻ' || c.id === 'c5')) {
+      parsed.push({
+        id: 'cust-khach-le',
+        name: 'Khách Lẻ',
+        phone: '',
+        studioName: 'Khách lẻ vãng lai',
+        address: 'Vãng lai tại tiệm',
+        initialDebt: 0,
+        customerType: 'Khách Lẻ',
+        notes: 'Tệp khách lẻ in ảnh gia đình, tiệc vãng lai ghé tiệm 1-2 lần (có thể ghi tên riêng từng người khi lên đơn)',
+        createdAt: '2026-05-20',
+        initialYearlyRevenue: 0
+      });
+      updated = true;
+    }
+
     if (updated) {
       localStorage.setItem(STORAGE_KEYS.CUSTOMERS, JSON.stringify(parsed));
     }
