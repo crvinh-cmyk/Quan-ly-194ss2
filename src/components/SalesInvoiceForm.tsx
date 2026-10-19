@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Product, Customer, Order, OrderItem, Material, ProductCategory, StudioCombo } from '../types';
-import { formatCurrency, formatNumber, getTodayDateString, formatDateVN, numberToVietnameseWords } from '../utils/formatters';
+import { formatCurrency, formatNumber, getTodayDateString, formatDateVN, numberToVietnameseWords, isWalkInPoolCustomer } from '../utils/formatters';
 import { calculateOrderBOM, calculateItemBOM, createMaterialDeductionRecords, extractEffectiveSize, normalizeSize, resolveProductCoreMaterial } from '../utils/materialBOM';
 import {
   Plus, Trash2, Search, Check, Save, Printer, RefreshCw, UserPlus,
@@ -196,6 +196,11 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
       setPopularTier(customer.customerType);
     }
 
+    // Nếu chọn khách hàng cố định (như Phước Công, Studio...), xóa guestName cũ
+    if (!isWalkInPoolCustomer(customer)) {
+      setGuestName('');
+    }
+
     // Compute previous debt of this customer from previous orders
     const pastOrders = allOrders
       .filter(o => o.customerId === customer.id && o.status !== 'cancelled')
@@ -208,35 +213,46 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
     }
   };
 
-  // Nhận diện tệp khách vãng lai (Khách Lẻ hoặc Freelance ghé 1-2 lần)
-  const isKhachLe = useMemo(() => {
-    const norm = (customerName || customerSearch || '').toLowerCase().trim();
-    if (norm === 'khách lẻ' || norm === 'khach le' || norm.startsWith('khách lẻ') || norm.startsWith('khach le')) return true;
+  // Nhận diện CHÍNH XÁC tệp khách vãng lai:
+  // CHỈ kích hoạt cho tệp vãng lai gom chung (ID cust-freelance / c4 hoặc tên đúng là Freelance/Frelance).
+  // TUYỆT ĐỐI KHÔNG áp dụng cho khách freelance cố định (như "Phước Công", "Thợ ảnh Nam"... có tên và hồ sơ riêng).
+  const isFreelance = useMemo(() => {
     if (selectedCustomerId) {
       const cust = customers.find(c => c.id === selectedCustomerId);
-      if (cust?.customerType === 'Khách Lẻ' || cust?.name.toLowerCase() === 'khách lẻ') return true;
+      if (cust) {
+        if (!isWalkInPoolCustomer(cust)) return false;
+        return cust.customerType === 'Freelance' || cust.id === 'cust-freelance' || cust.id === 'c4';
+      }
     }
-    return false;
+    const norm = (customerName || customerSearch || '').trim().toLowerCase();
+    return norm === 'freelance' || norm === 'frelance';
   }, [customerName, customerSearch, selectedCustomerId, customers]);
 
-  const isFreelance = useMemo(() => {
-    const norm = (customerName || customerSearch || '').toLowerCase().trim();
-    if (norm === 'freelance' || norm === 'frelance' || norm.startsWith('freelance') || norm.startsWith('frelance')) return true;
+  // Tương tự, CHỈ kích hoạt cho tệp Khách Lẻ vãng lai gom chung (ID cust-khach-le / c5 hoặc tên đúng là Khách Lẻ).
+  const isKhachLe = useMemo(() => {
     if (selectedCustomerId) {
       const cust = customers.find(c => c.id === selectedCustomerId);
-      if (cust?.customerType === 'Freelance' || cust?.name.toLowerCase() === 'freelance' || cust?.name.toLowerCase() === 'frelance') return true;
+      if (cust) {
+        if (!isWalkInPoolCustomer(cust)) return false;
+        return cust.customerType === 'Khách Lẻ' || cust.id === 'cust-khach-le' || cust.id === 'c5';
+      }
     }
-    return false;
+    const norm = (customerName || customerSearch || '').trim().toLowerCase();
+    return norm === 'khách lẻ' || norm === 'khach le';
   }, [customerName, customerSearch, selectedCustomerId, customers]);
 
   const isSpecialWalkIn = isKhachLe || isFreelance;
 
-  // Chọn nhanh tệp Khách Lẻ hoặc Freelance chỉ với 1 click
+  // Chọn nhanh tệp Khách Lẻ hoặc Freelance chỉ với 1 click (Tệp Vãng Lai)
   const handleQuickSelectWalkIn = (type: 'Khách Lẻ' | 'Freelance') => {
-    let matched = customers.find(c => c.customerType === type || c.name.toLowerCase() === type.toLowerCase());
-    if (!matched) {
-      matched = customers.find(c => type === 'Khách Lẻ' ? (c.id === 'cust-khach-le' || c.id === 'c5') : (c.id === 'cust-freelance' || c.id === 'c4'));
-    }
+    let matched = customers.find(c => {
+      const cName = c.name.trim().toLowerCase();
+      if (type === 'Khách Lẻ') {
+        return c.id === 'cust-khach-le' || c.id === 'c5' || cName === 'khách lẻ' || cName === 'khach le';
+      } else {
+        return c.id === 'cust-freelance' || c.id === 'c4' || cName === 'freelance' || cName === 'frelance';
+      }
+    });
 
     if (matched) {
       handleSelectCustomer(matched);
@@ -1008,24 +1024,24 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
     // Chuẩn bị tên khách hàng lưu nội bộ và tên riêng chụp gửi khách
     const trimmedGuest = guestName.trim();
     let finalCustomerName = (customerName || customerSearch || '').trim();
+    let finalCustomerId = selectedCustomerId;
+
     if (isKhachLe) {
       finalCustomerName = trimmedGuest ? `Khách Lẻ - ${trimmedGuest}` : 'Khách Lẻ';
+      if (!finalCustomerId) {
+        const klCust = customers.find(c => c.id === 'cust-khach-le' || c.id === 'c5' || c.name.trim().toLowerCase() === 'khách lẻ');
+        finalCustomerId = klCust?.id || 'cust-khach-le';
+      }
     } else if (isFreelance) {
       finalCustomerName = trimmedGuest ? `Freelance - ${trimmedGuest}` : 'Freelance';
-    } else if (trimmedGuest) {
-      finalCustomerName = `${finalCustomerName} - ${trimmedGuest}`;
-    }
-
-    // Đảm bảo đơn của khách lẻ & freelance vãng lai liên kết chuẩn vào bản ghi chung trong sổ nợ
-    let finalCustomerId = selectedCustomerId;
-    if (!finalCustomerId) {
-      if (isKhachLe) {
-        const klCust = customers.find(c => c.customerType === 'Khách Lẻ' || c.name.toLowerCase() === 'khách lẻ' || c.id === 'cust-khach-le' || c.id === 'c5');
-        finalCustomerId = klCust?.id || 'cust-khach-le';
-      } else if (isFreelance) {
-        const flCust = customers.find(c => c.customerType === 'Freelance' || c.name.toLowerCase() === 'freelance' || c.id === 'cust-freelance' || c.id === 'c4');
+      if (!finalCustomerId) {
+        const flCust = customers.find(c => c.id === 'cust-freelance' || c.id === 'c4' || c.name.trim().toLowerCase() === 'freelance' || c.name.trim().toLowerCase() === 'frelance');
         finalCustomerId = flCust?.id || 'cust-freelance';
-      } else {
+      }
+    } else {
+      // Khách hàng cố định (như Phước Công, Studio Hoàng Gia...)
+      // Giữ nguyên ID và tên riêng của khách, TUYỆT ĐỐI KHÔNG gom vào pool vãng lai!
+      if (!finalCustomerId) {
         finalCustomerId = `cust-${Date.now()}`;
       }
     }
@@ -1035,8 +1051,8 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
       orderNumber: orderNum,
       date: orderDate,
       customerId: finalCustomerId,
-      customerName: finalCustomerName || 'Khách Vãng Lai / Lẻ',
-      guestName: trimmedGuest || undefined,
+      customerName: finalCustomerName || 'Khách Hàng',
+      guestName: isSpecialWalkIn && trimmedGuest ? trimmedGuest : undefined,
       customerPhone: customerPhone.trim() || '',
       customerAddress: customerAddress.trim() || '',
       items: validItems,
@@ -1363,12 +1379,28 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
                 <ChevronDown className="w-4 h-4 text-slate-400 absolute right-2.5 top-2.5 pointer-events-none" />
               </div>
 
+              {/* Thông báo phân loại cho khách Freelance cố định (như Phước Công) */}
+              {selectedCustomerId && !isSpecialWalkIn && (() => {
+                const selectedCust = customers.find(c => c.id === selectedCustomerId);
+                if (selectedCust?.customerType === 'Freelance') {
+                  return (
+                    <div className="mt-1 flex items-center gap-1.5 text-[11px] text-amber-800 font-semibold bg-amber-50 px-2 py-0.5 rounded-lg border border-amber-200 w-fit">
+                      <Camera className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                      <span>Khách Freelance cố định: <strong>{selectedCust.name}</strong> • Đang áp dụng bảng giá Freelance</span>
+                    </div>
+                  );
+                }
+                return null;
+              })()}
+
               {/* Customer Dropdown */}
               {showCustomerDropdown && (
                 <div className="absolute left-0 right-0 top-full mt-1 bg-white border border-slate-200 rounded-xl shadow-xl z-30 max-h-60 overflow-y-auto divide-y divide-slate-100">
                   {filteredCustomers.length > 0 ? (
                     filteredCustomers.map(cust => {
-                      const isWalkInCust = cust.customerType === 'Khách Lẻ' || cust.customerType === 'Freelance' || cust.name.toLowerCase() === 'khách lẻ' || cust.name.toLowerCase() === 'freelance';
+                      const cName = cust.name.trim().toLowerCase();
+                      const isWalkInCust = (cust.id === 'cust-freelance' || cust.id === 'c4' || cName === 'freelance' || cName === 'frelance') ||
+                                           (cust.id === 'cust-khach-le' || cust.id === 'c5' || cName === 'khách lẻ' || cName === 'khach le');
                       return (
                         <button
                           key={cust.id}
@@ -1383,11 +1415,15 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
                               <p className="font-semibold text-xs text-slate-900 group-hover:text-amber-700">
                                 {cust.name} {cust.studioName ? `(${cust.studioName})` : ''}
                               </p>
-                              {isWalkInCust && (
+                              {isWalkInCust ? (
                                 <span className="text-[10px] font-bold px-1.5 py-0.2 rounded-full bg-amber-100 text-amber-800 border border-amber-200">
                                   Tệp vãng lai
                                 </span>
-                              )}
+                              ) : cust.customerType === 'Freelance' ? (
+                                <span className="text-[10px] font-bold px-1.5 py-0.2 rounded-full bg-amber-50 text-amber-800 border border-amber-300">
+                                  Freelance cố định
+                                </span>
+                              ) : null}
                             </div>
                             <p className="text-[11px] text-slate-500">
                               {isWalkInCust ? '👥 Khách ghé 1-2 lần • Ghi tên riêng khi lên đơn' : `${cust.phone || 'Chưa SĐT'} • ${cust.address || 'Hà Nội'}`}

@@ -6,7 +6,7 @@ import { calculateCustomerDebt } from '../utils/storage';
 import {
   Users, Plus, Search, DollarSign, Phone, MapPin, CheckCircle2, History, Star,
   AlertCircle, Building2, Camera, User, Award, Crown, TrendingUp, Calendar,
-  ArrowUpDown, Sparkles, Edit3, Printer, Eye, X, ExternalLink
+  ArrowUpDown, Sparkles, Edit3, Printer, Eye, X, ExternalLink, Trash2
 } from 'lucide-react';
 import { MoneyInput } from './MoneyInput';
 
@@ -16,6 +16,7 @@ interface CustomerManagementViewProps {
   workshop?: WorkshopInfo;
   onAddCustomer: (customer: Customer) => void;
   onUpdateCustomer: (customer: Customer) => void;
+  onDeleteCustomer?: (customerId: string) => void;
   onRecordDebtPayment: (customerId: string, amount: number, note: string) => void;
   onViewCustomerOrders: (customerId: string) => void;
   onPrintOrder?: (order: Order) => void;
@@ -27,6 +28,7 @@ export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
   workshop,
   onAddCustomer,
   onUpdateCustomer,
+  onDeleteCustomer,
   onRecordDebtPayment,
   onViewCustomerOrders,
   onPrintOrder
@@ -46,6 +48,9 @@ export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
   // Modal create/edit customer
   const [isCustomerModalOpen, setIsCustomerModalOpen] = useState(false);
   const [editingCust, setEditingCust] = useState<Customer | null>(null);
+
+  // Modal confirm delete customer
+  const [customerToDelete, setCustomerToDelete] = useState<Customer | null>(null);
 
   // Modal viewing customer orders
   const [viewingOrdersCustomer, setViewingOrdersCustomer] = useState<Customer | null>(null);
@@ -691,6 +696,16 @@ export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
                     <Eye className="w-3.5 h-3.5" />
                     <span>Xem đơn ({cust.ordersCount})</span>
                   </button>
+                  <span className="text-slate-300">•</span>
+                  <button
+                    type="button"
+                    onClick={() => setCustomerToDelete(cust)}
+                    className="text-xs text-red-500 hover:text-red-700 font-semibold cursor-pointer flex items-center gap-1"
+                    title="Xóa khách hàng này"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Xóa</span>
+                  </button>
                 </div>
 
                 {cust.currentDebt > 0 ? (
@@ -947,19 +962,36 @@ export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
                 </p>
               </div>
             </div>
-            <div className="p-3 bg-slate-50 border-t border-slate-200 flex justify-end gap-2">
-              <button
-                onClick={() => setIsCustomerModalOpen(false)}
-                className="px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-200 rounded-lg cursor-pointer"
-              >
-                Hủy
-              </button>
-              <button
-                onClick={handleSaveCustomer}
-                className="px-4 py-1.5 text-xs font-bold text-slate-950 bg-amber-500 hover:bg-amber-400 rounded-xl shadow-xs cursor-pointer"
-              >
-                Lưu Thông Tin
-              </button>
+            <div className="p-3 bg-slate-50 border-t border-slate-200 flex justify-between items-center gap-2">
+              {editingCust ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const toDel = editingCust;
+                    setIsCustomerModalOpen(false);
+                    setCustomerToDelete(toDel);
+                  }}
+                  className="px-3 py-1.5 text-xs font-semibold text-red-600 hover:text-red-700 hover:bg-red-50 rounded-lg cursor-pointer flex items-center gap-1 border border-red-200 transition"
+                  title="Xóa khách hàng này"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Xóa khách hàng</span>
+                </button>
+              ) : <div />}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setIsCustomerModalOpen(false)}
+                  className="px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-200 rounded-lg cursor-pointer"
+                >
+                  Hủy
+                </button>
+                <button
+                  onClick={handleSaveCustomer}
+                  className="px-4 py-1.5 text-xs font-bold text-slate-950 bg-amber-500 hover:bg-amber-400 rounded-xl shadow-xs cursor-pointer"
+                >
+                  Lưu Thông Tin
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -1225,6 +1257,58 @@ export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
                 className="px-4 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-xs font-bold transition cursor-pointer"
               >
                 Đóng
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Xác Nhận Xóa Khách Hàng */}
+      {customerToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-sm w-full overflow-hidden border border-slate-200 animate-in fade-in zoom-in-95 duration-150">
+            <div className="p-4 bg-red-50 border-b border-red-100 flex items-center gap-3">
+              <div className="p-2.5 bg-red-100 text-red-600 rounded-xl shrink-0">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="font-extrabold text-sm text-red-950">Xác Nhận Xóa Khách Hàng</h3>
+                <p className="text-xs text-red-700 mt-0.5">Xóa khách hàng khỏi danh sách</p>
+              </div>
+            </div>
+            <div className="p-4 text-xs text-slate-700 space-y-2">
+              <p>Bạn có chắc chắn muốn xóa khách hàng sau không?</p>
+              <div className="p-2.5 bg-slate-50 rounded-xl border border-slate-200 space-y-1">
+                <p className="font-bold text-slate-900 text-sm">{customerToDelete.name}</p>
+                {customerToDelete.studioName && (
+                  <p className="text-slate-500 text-xs">Studio: {customerToDelete.studioName}</p>
+                )}
+                {customerToDelete.phone && (
+                  <p className="text-slate-500 font-mono text-[11px]">SĐT: {customerToDelete.phone}</p>
+                )}
+              </div>
+            </div>
+            <div className="p-3 bg-slate-50 border-t border-slate-200 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setCustomerToDelete(null)}
+                className="px-3.5 py-1.5 text-xs text-slate-600 hover:bg-slate-200 rounded-xl cursor-pointer font-semibold transition"
+              >
+                Hủy bỏ
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (onDeleteCustomer && customerToDelete) {
+                    onDeleteCustomer(customerToDelete.id);
+                    showToast(`Đã xóa khách hàng "${customerToDelete.name}" thành công`);
+                  }
+                  setCustomerToDelete(null);
+                }}
+                className="px-4 py-1.5 text-xs font-bold text-white bg-red-600 hover:bg-red-500 rounded-xl shadow-xs cursor-pointer flex items-center gap-1.5 transition"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Xóa Khách Hàng</span>
               </button>
             </div>
           </div>

@@ -819,6 +819,7 @@ export default function App() {
             workshop={workshop}
             onAddCustomer={handleAddCustomer}
             onUpdateCustomer={handleUpdateCustomer}
+            onDeleteCustomer={handleDeleteCustomer}
             onRecordDebtPayment={handleRecordDebtPayment}
             onPrintOrder={(order) => setActivePrintOrder(order)}
             onViewCustomerOrders={(cId) => {

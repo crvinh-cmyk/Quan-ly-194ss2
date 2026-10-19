@@ -229,3 +229,29 @@ export function getCustomerFacingName(order?: { customerName?: string; guestName
   return cleanName;
 }
 
+/**
+ * Phân biệt rạch ròi giữa tệp Vãng Lai (pool gom chung) và Khách Hàng Cố Định.
+ * CHỈ tệp vãng lai của hệ thống (ID 'cust-freelance', 'c4', 'cust-khach-le', 'c5' hoặc flag isWalkInPool) mới là tệp vãng lai gom chung.
+ * Mọi khách cố định khác (như Phước Công, Studio Hoàng Gia...) có hồ sơ riêng, công nợ riêng, KHÔNG phải tệp vãng lai.
+ */
+export function isWalkInPoolCustomer(c?: { id?: string; name?: string; isWalkInPool?: boolean } | null): boolean {
+  if (!c) return false;
+  if (c.isWalkInPool === true) return true;
+  const id = (c.id || '').trim().toLowerCase();
+  const name = (c.name || '').trim().toLowerCase();
+
+  // Exact system IDs
+  if (id === 'cust-freelance' || id === 'c4') return true;
+  if (id === 'cust-khach-le' || id === 'c5') return true;
+
+  // Exact match on default name when no custom ID or matches pool
+  if (name === 'freelance' || name === 'frelance') {
+    return id === 'cust-freelance' || id === 'c4' || !id;
+  }
+  if (name === 'khách lẻ' || name === 'khach le') {
+    return id === 'cust-khach-le' || id === 'c5' || !id;
+  }
+
+  return false;
+}
+
