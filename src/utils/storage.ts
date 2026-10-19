@@ -202,76 +202,39 @@ export function saveStoredProducts(products: Product[]): void {
   localStorage.setItem(STORAGE_KEYS.PRODUCTS, JSON.stringify(products));
 }
 
-const DELETED_CUSTOMERS_KEY = 'xuongin194_deleted_customer_ids';
-
-export function getDeletedCustomerIds(): string[] {
-  try {
-    const raw = localStorage.getItem(DELETED_CUSTOMERS_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
-}
-
-export function addDeletedCustomerId(id: string): void {
-  try {
-    const list = getDeletedCustomerIds();
-    if (!list.includes(id)) {
-      list.push(id);
-      localStorage.setItem(DELETED_CUSTOMERS_KEY, JSON.stringify(list));
-    }
-  } catch (e) {
-    console.error(e);
-  }
-}
-
-export function removeDeletedCustomerId(id: string): void {
-  try {
-    const list = getDeletedCustomerIds().filter(i => i !== id);
-    localStorage.setItem(DELETED_CUSTOMERS_KEY, JSON.stringify(list));
-  } catch (e) {
-    console.error(e);
-  }
-}
-
 export function getStoredCustomers(): Customer[] {
   try {
-    const deletedIds = getDeletedCustomerIds();
     const raw = localStorage.getItem(STORAGE_KEYS.CUSTOMERS);
     if (!raw) {
-      return DEFAULT_CUSTOMERS.filter(c => !deletedIds.includes(c.id));
+      localStorage.setItem(STORAGE_KEYS.CUSTOMERS, JSON.stringify(DEFAULT_CUSTOMERS));
+      return DEFAULT_CUSTOMERS;
     }
     let parsed: Customer[] = JSON.parse(raw);
     let updated = false;
 
-    // Filter out any explicitly deleted customers
-    if (deletedIds.length > 0) {
-      const originalLen = parsed.length;
-      parsed = parsed.filter(c => !deletedIds.includes(c.id));
-      if (parsed.length !== originalLen) updated = true;
-    }
-
     // Migrate existing customers
     parsed = parsed.map(c => {
-      if (c.id === 'c4' && (c.name.includes('Quốc Dũng') || c.name.includes('Thợ Chụp'))) {
+      // TUYỆT ĐỐI không chạm vào khách Studio (như Son Studio, OH Studio...)
+      if (c.customerType === 'GIÁ STUDIO' || c.name.toLowerCase().includes('studio') || (c.studioName && c.studioName.toLowerCase().includes('studio'))) {
+        return c;
+      }
+      if (c.name.toLowerCase() === 'freelance' && (c.studioName?.includes('tự do') || c.studioName?.includes('vãng lai'))) {
         updated = true;
         return {
           ...c,
-          name: 'Freelance',
-          studioName: 'Freelance / Thợ tự do',
+          name: 'Tổng hợp Freelance Doanh số ít',
+          studioName: 'Freelance vãng lai (Doanh số ít)',
           customerType: 'Freelance' as const,
-          isWalkInPool: true,
           notes: 'Tệp khách Freelance vãng lai ghé tiệm in 1-2 lần (có thể ghi tên riêng từng người khi lên đơn)'
         };
       }
-      if (c.id === 'c5' && c.name.includes('Mai Hương')) {
+      if (c.name.toLowerCase() === 'khách lẻ' && (c.studioName?.includes('vãng lai') || !c.studioName)) {
         updated = true;
         return {
           ...c,
           name: 'Khách Lẻ',
           studioName: 'Khách lẻ vãng lai',
           customerType: 'Khách Lẻ' as const,
-          isWalkInPool: true,
           notes: 'Tệp khách lẻ in ảnh gia đình, tiệc vãng lai ghé tiệm 1-2 lần (có thể ghi tên riêng từng người khi lên đơn)'
         };
       }
@@ -288,82 +251,39 @@ export function getStoredCustomers(): Customer[] {
       return c;
     });
 
-    // Ensure fixed Freelance customer "Phước Công" exists if not deleted and not in parsed
-    if (!deletedIds.includes('c-phuoc-cong') && !parsed.some(c => c.name.trim().toLowerCase() === 'phước công')) {
+    // Ensure dedicated standard walk-in Freelance item exists
+    if (!parsed.some(c => c.name.toLowerCase().includes('tổng hợp freelance') || c.id === 'cust-freelance' || c.id === 'c4')) {
       parsed.push({
-        id: 'c-phuoc-cong',
-        name: 'Phước Công',
-        phone: '0979 888 666',
-        studioName: 'Phước Công Freelance',
-        address: 'Hà Nội',
+        id: 'cust-freelance',
+        name: 'Tổng hợp Freelance Doanh số ít',
+        phone: '',
+        studioName: 'Freelance vãng lai (Doanh số ít)',
+        address: 'Vãng lai tại tiệm',
         initialDebt: 0,
         customerType: 'Freelance',
-        notes: 'Khách Freelance cố định in ảnh đều đặn tại xưởng (áp dụng Bảng giá Freelance, theo dõi công nợ & doanh thu riêng biệt)',
-        createdAt: '2026-03-10',
-        initialYearlyRevenue: 12000000
+        notes: 'Tệp khách Freelance vãng lai ghé tiệm in 1-2 lần (có thể ghi tên riêng từng người khi lên đơn)',
+        createdAt: '2026-04-12',
+        initialYearlyRevenue: 0
       });
       updated = true;
     }
 
-    // Ensure dedicated standard Freelance walk-in pool item exists (only if not deleted)
-    if (!deletedIds.includes('cust-freelance') && !deletedIds.includes('c4')) {
-      if (!parsed.some(c => (c.name.trim().toLowerCase() === 'freelance' && (c.id === 'c4' || c.id === 'cust-freelance')) || c.id === 'cust-freelance' || c.id === 'c4')) {
-        parsed.push({
-          id: 'cust-freelance',
-          name: 'Freelance',
-          phone: '',
-          studioName: 'Freelance / Thợ tự do',
-          address: 'Vãng lai tại tiệm',
-          initialDebt: 0,
-          customerType: 'Freelance',
-          isWalkInPool: true,
-          notes: 'Tệp khách Freelance vãng lai ghé tiệm in 1-2 lần (có thể ghi tên riêng từng người khi lên đơn)',
-          createdAt: '2026-04-12',
-          initialYearlyRevenue: 0
-        });
-        updated = true;
-      }
+    // Ensure dedicated standard Khách Lẻ item exists
+    if (!parsed.some(c => c.name.toLowerCase() === 'khách lẻ' || c.id === 'c5')) {
+      parsed.push({
+        id: 'cust-khach-le',
+        name: 'Khách Lẻ',
+        phone: '',
+        studioName: 'Khách lẻ vãng lai',
+        address: 'Vãng lai tại tiệm',
+        initialDebt: 0,
+        customerType: 'Khách Lẻ',
+        notes: 'Tệp khách lẻ in ảnh gia đình, tiệc vãng lai ghé tiệm 1-2 lần (có thể ghi tên riêng từng người khi lên đơn)',
+        createdAt: '2026-05-20',
+        initialYearlyRevenue: 0
+      });
+      updated = true;
     }
-
-    // Ensure dedicated standard Khách Lẻ walk-in pool item exists (only if not deleted)
-    if (!deletedIds.includes('cust-khach-le') && !deletedIds.includes('c5')) {
-      if (!parsed.some(c => (c.name.trim().toLowerCase() === 'khách lẻ' && (c.id === 'c5' || c.id === 'cust-khach-le')) || c.id === 'cust-khach-le' || c.id === 'c5')) {
-        parsed.push({
-          id: 'cust-khach-le',
-          name: 'Khách Lẻ',
-          phone: '',
-          studioName: 'Khách lẻ vãng lai',
-          address: 'Vãng lai tại tiệm',
-          initialDebt: 0,
-          customerType: 'Khách Lẻ',
-          isWalkInPool: true,
-          notes: 'Tệp khách lẻ in ảnh gia đình, tiệc vãng lai ghé tiệm 1-2 lần (có thể ghi tên riêng từng người khi lên đơn)',
-          createdAt: '2026-05-20',
-          initialYearlyRevenue: 0
-        });
-        updated = true;
-      }
-    }
-
-    // Deduplicate any repeated walk-in freelance or walk-in khách lẻ items
-    const seenWalkIns = new Set<string>();
-    parsed = parsed.filter(c => {
-      if (c.id === 'c4' || c.id === 'cust-freelance') {
-        if (seenWalkIns.has('walkin-freelance')) {
-          updated = true;
-          return false;
-        }
-        seenWalkIns.add('walkin-freelance');
-      }
-      if (c.id === 'c5' || c.id === 'cust-khach-le') {
-        if (seenWalkIns.has('walkin-khach-le')) {
-          updated = true;
-          return false;
-        }
-        seenWalkIns.add('walkin-khach-le');
-      }
-      return true;
-    });
 
     if (updated) {
       localStorage.setItem(STORAGE_KEYS.CUSTOMERS, JSON.stringify(parsed));

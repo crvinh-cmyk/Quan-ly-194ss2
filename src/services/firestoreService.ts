@@ -10,7 +10,7 @@ import {
   runTransaction
 } from 'firebase/firestore';
 import { db } from '../firebase/config';
-import { Product, Customer, Order, Material, StockImportReceipt, StockImportItem, WorkshopInfo, StudioCombo, ProductCostItem, ProductCostMap, InkImportRecord, InkColorCode, S1aDayOverride, S1aManualEntry, BoardCorePriceRow, BoardCorePriceMap, AccessoryMaterialItem, AccessoryMaterialMap, PaperMaterialItem, PaperMaterialMap } from '../types';
+import { Product, Customer, Order, Material, StockImportReceipt, StockImportItem, WorkshopInfo, StudioCombo, ProductCostItem, ProductCostMap, InkImportRecord, InkColorCode, S1aDayOverride, S1aManualEntry, BoardCorePriceRow, BoardCorePriceMap, AccessoryMaterialItem, AccessoryMaterialMap, PaperMaterialItem, PaperMaterialMap, ArchivedDeletedCustomerRevenue } from '../types';
 import { DEFAULT_WORKSHOP_INFO, DEFAULT_INK_IMPORTS } from '../data/initialData';
 
 // User info interface for tagging created/updated records
@@ -1905,3 +1905,67 @@ export async function savePaperMaterialsToFirestore(
     console.error('Error saving paper materials to Firestore:', e);
   }
 }
+
+// =================================================================
+// 10. ARCHIVED DELETED CUSTOMER REVENUES (BẢO LƯU DOANH THU NĂM KHI XÓA KHÁCH HÀNG)
+// =================================================================
+const ARCHIVED_DELETED_CUSTOMERS_KEY = 'xuongin194_archived_deleted_customers_v1';
+
+export function getLocalArchivedCustomerRevenues(): ArchivedDeletedCustomerRevenue[] {
+  try {
+    const raw = localStorage.getItem(ARCHIVED_DELETED_CUSTOMERS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveLocalArchivedCustomerRevenues(records: ArchivedDeletedCustomerRevenue[]): void {
+  try {
+    localStorage.setItem(ARCHIVED_DELETED_CUSTOMERS_KEY, JSON.stringify(records));
+  } catch (e) {
+    console.error('Error saving local archived customer revenues:', e);
+  }
+}
+
+export function subscribeArchivedCustomerRevenues(
+  onData: (records: ArchivedDeletedCustomerRevenue[]) => void,
+  onError?: (err: Error) => void
+) {
+  const docRef = doc(db, COLLECTIONS.SETTINGS, 'archived_deleted_customers');
+  return onSnapshot(docRef, (snapshot) => {
+    if (snapshot.exists()) {
+      const raw = snapshot.data();
+      const records = Array.isArray(raw?.records) ? raw.records : [];
+      saveLocalArchivedCustomerRevenues(records);
+      onData(records);
+    } else {
+      onData(getLocalArchivedCustomerRevenues());
+    }
+  }, (err) => {
+    console.error('Firestore subscribeArchivedCustomerRevenues error:', err);
+    onData(getLocalArchivedCustomerRevenues());
+    if (onError) onError(err);
+  });
+}
+
+export async function saveArchivedCustomerRevenuesToFirestore(
+  records: ArchivedDeletedCustomerRevenue[],
+  user?: AuthUserContext | null
+): Promise<void> {
+  saveLocalArchivedCustomerRevenues(records);
+  try {
+    const docRef = doc(db, COLLECTIONS.SETTINGS, 'archived_deleted_customers');
+    const payload = {
+      records,
+      updatedAt: new Date().toISOString()
+    };
+    const enriched = attachUserInfo(payload, user);
+    await setDoc(docRef, cleanFirestoreObject(enriched), { merge: true });
+  } catch (e) {
+    console.error('Error saving archived deleted customers to Firestore:', e);
+  }
+}
+

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Product, Customer, Order, OrderItem, Material, ProductCategory, StudioCombo } from '../types';
-import { formatCurrency, formatNumber, getTodayDateString, formatDateVN, numberToVietnameseWords, isWalkInPoolCustomer } from '../utils/formatters';
+import { formatCurrency, formatNumber, getTodayDateString, formatDateVN, numberToVietnameseWords, isFreelanceWalkInPool, isRetailWalkInPool, isWalkInPoolCustomer } from '../utils/formatters';
 import { calculateOrderBOM, calculateItemBOM, createMaterialDeductionRecords, extractEffectiveSize, normalizeSize, resolveProductCoreMaterial } from '../utils/materialBOM';
 import {
   Plus, Trash2, Search, Check, Save, Printer, RefreshCw, UserPlus,
@@ -196,11 +196,6 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
       setPopularTier(customer.customerType);
     }
 
-    // Nếu chọn khách hàng cố định (như Phước Công, Studio...), xóa guestName cũ
-    if (!isWalkInPoolCustomer(customer)) {
-      setGuestName('');
-    }
-
     // Compute previous debt of this customer from previous orders
     const pastOrders = allOrders
       .filter(o => o.customerId === customer.id && o.status !== 'cancelled')
@@ -213,53 +208,48 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
     }
   };
 
-  // Nhận diện CHÍNH XÁC tệp khách vãng lai:
-  // CHỈ kích hoạt cho tệp vãng lai gom chung (ID cust-freelance / c4 hoặc tên đúng là Freelance/Frelance).
-  // TUYỆT ĐỐI KHÔNG áp dụng cho khách freelance cố định (như "Phước Công", "Thợ ảnh Nam"... có tên và hồ sơ riêng).
-  const isFreelance = useMemo(() => {
-    if (selectedCustomerId) {
-      const cust = customers.find(c => c.id === selectedCustomerId);
-      if (cust) {
-        if (!isWalkInPoolCustomer(cust)) return false;
-        return cust.customerType === 'Freelance' || cust.id === 'cust-freelance' || cust.id === 'c4';
-      }
-    }
-    const norm = (customerName || customerSearch || '').trim().toLowerCase();
-    return norm === 'freelance' || norm === 'frelance';
-  }, [customerName, customerSearch, selectedCustomerId, customers]);
-
-  // Tương tự, CHỈ kích hoạt cho tệp Khách Lẻ vãng lai gom chung (ID cust-khach-le / c5 hoặc tên đúng là Khách Lẻ).
+  // Nhận diện tệp khách vãng lai:
+  // CHỈ CÓ "Khách Lẻ" và "Tổng hợp Freelance Doanh số ít" mới là tệp vãng lai gom chung.
+  // Mọi khách Freelance khác đều là khách thường xuyên gửi ảnh in, được lưu thông tin riêng giống Studio.
   const isKhachLe = useMemo(() => {
+    const norm = (customerName || customerSearch || '').toLowerCase().trim();
+    if (norm === 'khách lẻ' || norm === 'khach le' || norm.startsWith('khách lẻ')) return true;
     if (selectedCustomerId) {
       const cust = customers.find(c => c.id === selectedCustomerId);
-      if (cust) {
-        if (!isWalkInPoolCustomer(cust)) return false;
-        return cust.customerType === 'Khách Lẻ' || cust.id === 'cust-khach-le' || cust.id === 'c5';
-      }
+      if (isRetailWalkInPool(cust)) return true;
     }
-    const norm = (customerName || customerSearch || '').trim().toLowerCase();
-    return norm === 'khách lẻ' || norm === 'khach le';
+    return false;
   }, [customerName, customerSearch, selectedCustomerId, customers]);
 
-  const isSpecialWalkIn = isKhachLe || isFreelance;
+  const isFreelanceWalkIn = useMemo(() => {
+    const norm = (customerName || customerSearch || '').toLowerCase().trim();
+    if (norm.includes('tổng hợp freelance') || norm.includes('doanh số ít') || norm === 'freelance' || norm === 'frelance') {
+      // Nếu tên người dùng gõ hoặc chọn là tệp tổng hợp vãng lai
+      return true;
+    }
+    if (selectedCustomerId) {
+      const cust = customers.find(c => c.id === selectedCustomerId);
+      if (isFreelanceWalkInPool(cust)) return true;
+    }
+    return false;
+  }, [customerName, customerSearch, selectedCustomerId, customers]);
 
-  // Chọn nhanh tệp Khách Lẻ hoặc Freelance chỉ với 1 click (Tệp Vãng Lai)
+  const isSpecialWalkIn = isKhachLe || isFreelanceWalkIn;
+
+  // Chọn nhanh tệp Khách Lẻ hoặc Tổng Hợp Freelance chỉ với 1 click
   const handleQuickSelectWalkIn = (type: 'Khách Lẻ' | 'Freelance') => {
-    let matched = customers.find(c => {
-      const cName = c.name.trim().toLowerCase();
-      if (type === 'Khách Lẻ') {
-        return c.id === 'cust-khach-le' || c.id === 'c5' || cName === 'khách lẻ' || cName === 'khach le';
-      } else {
-        return c.id === 'cust-freelance' || c.id === 'c4' || cName === 'freelance' || cName === 'frelance';
-      }
-    });
+    let matched = customers.find(c => type === 'Khách Lẻ' ? isRetailWalkInPool(c) : isFreelanceWalkInPool(c));
+    if (!matched) {
+      matched = customers.find(c => type === 'Khách Lẻ' ? (c.id === 'cust-khach-le' || c.id === 'c5') : (c.id === 'cust-freelance' || c.id === 'c4'));
+    }
 
     if (matched) {
       handleSelectCustomer(matched);
     } else {
       setSelectedCustomerId(type === 'Khách Lẻ' ? 'cust-khach-le' : 'cust-freelance');
-      setCustomerName(type);
-      setCustomerSearch(type);
+      const dispName = type === 'Khách Lẻ' ? 'Khách Lẻ' : 'Tổng hợp Freelance Doanh số ít';
+      setCustomerName(dispName);
+      setCustomerSearch(dispName);
       setCatalogCategory(type);
       setPopularTier(type);
     }
@@ -1024,24 +1014,24 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
     // Chuẩn bị tên khách hàng lưu nội bộ và tên riêng chụp gửi khách
     const trimmedGuest = guestName.trim();
     let finalCustomerName = (customerName || customerSearch || '').trim();
-    let finalCustomerId = selectedCustomerId;
-
     if (isKhachLe) {
       finalCustomerName = trimmedGuest ? `Khách Lẻ - ${trimmedGuest}` : 'Khách Lẻ';
-      if (!finalCustomerId) {
-        const klCust = customers.find(c => c.id === 'cust-khach-le' || c.id === 'c5' || c.name.trim().toLowerCase() === 'khách lẻ');
+    } else if (isFreelanceWalkIn) {
+      finalCustomerName = trimmedGuest ? `Freelance - ${trimmedGuest}` : 'Tổng hợp Freelance Doanh số ít';
+    } else if (trimmedGuest) {
+      finalCustomerName = `${finalCustomerName} - ${trimmedGuest}`;
+    }
+
+    // Đảm bảo đơn của khách lẻ & freelance vãng lai liên kết chuẩn vào bản ghi chung trong sổ nợ
+    let finalCustomerId = selectedCustomerId;
+    if (!finalCustomerId) {
+      if (isKhachLe) {
+        const klCust = customers.find(c => isRetailWalkInPool(c));
         finalCustomerId = klCust?.id || 'cust-khach-le';
-      }
-    } else if (isFreelance) {
-      finalCustomerName = trimmedGuest ? `Freelance - ${trimmedGuest}` : 'Freelance';
-      if (!finalCustomerId) {
-        const flCust = customers.find(c => c.id === 'cust-freelance' || c.id === 'c4' || c.name.trim().toLowerCase() === 'freelance' || c.name.trim().toLowerCase() === 'frelance');
+      } else if (isFreelanceWalkIn) {
+        const flCust = customers.find(c => isFreelanceWalkInPool(c));
         finalCustomerId = flCust?.id || 'cust-freelance';
-      }
-    } else {
-      // Khách hàng cố định (như Phước Công, Studio Hoàng Gia...)
-      // Giữ nguyên ID và tên riêng của khách, TUYỆT ĐỐI KHÔNG gom vào pool vãng lai!
-      if (!finalCustomerId) {
+      } else {
         finalCustomerId = `cust-${Date.now()}`;
       }
     }
@@ -1051,8 +1041,8 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
       orderNumber: orderNum,
       date: orderDate,
       customerId: finalCustomerId,
-      customerName: finalCustomerName || 'Khách Hàng',
-      guestName: isSpecialWalkIn && trimmedGuest ? trimmedGuest : undefined,
+      customerName: finalCustomerName || 'Khách Vãng Lai / Lẻ',
+      guestName: trimmedGuest || undefined,
       customerPhone: customerPhone.trim() || '',
       customerAddress: customerAddress.trim() || '',
       items: validItems,
@@ -1323,7 +1313,7 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
                     <span>Khách hàng / Studio</span>
                     <span className="text-red-500">*</span>
                   </label>
-                  {/* Quick Select Walk-in Categories (Khách Lẻ / Freelance) */}
+                  {/* Quick Select Walk-in Categories (Khách Lẻ / Tổng hợp Freelance) */}
                   <div className="inline-flex items-center gap-1 ml-1">
                     <button
                       type="button"
@@ -1342,14 +1332,14 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
                       type="button"
                       onClick={() => handleQuickSelectWalkIn('Freelance')}
                       className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-bold transition cursor-pointer border ${
-                        isFreelance
+                        isFreelanceWalkIn
                           ? 'bg-amber-600 text-white border-amber-700 shadow-xs'
                           : 'bg-amber-50 hover:bg-amber-100 text-amber-900 border-amber-200'
                       }`}
-                      title="Chọn nhanh tệp thợ chụp Freelance vãng lai (không tạo khách mới)"
+                      title="Chọn nhanh tệp thợ chụp Freelance vãng lai doanh số ít (không tạo khách mới)"
                     >
                       <Camera className="w-3 h-3" />
-                      <span>Freelance</span>
+                      <span>Freelance Vãng Lai</span>
                     </button>
                   </div>
                 </div>
@@ -1379,28 +1369,12 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
                 <ChevronDown className="w-4 h-4 text-slate-400 absolute right-2.5 top-2.5 pointer-events-none" />
               </div>
 
-              {/* Thông báo phân loại cho khách Freelance cố định (như Phước Công) */}
-              {selectedCustomerId && !isSpecialWalkIn && (() => {
-                const selectedCust = customers.find(c => c.id === selectedCustomerId);
-                if (selectedCust?.customerType === 'Freelance') {
-                  return (
-                    <div className="mt-1 flex items-center gap-1.5 text-[11px] text-amber-800 font-semibold bg-amber-50 px-2 py-0.5 rounded-lg border border-amber-200 w-fit">
-                      <Camera className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-                      <span>Khách Freelance cố định: <strong>{selectedCust.name}</strong> • Đang áp dụng bảng giá Freelance</span>
-                    </div>
-                  );
-                }
-                return null;
-              })()}
-
               {/* Customer Dropdown */}
               {showCustomerDropdown && (
                 <div className="absolute left-0 right-0 top-full mt-1 bg-white border border-slate-200 rounded-xl shadow-xl z-30 max-h-60 overflow-y-auto divide-y divide-slate-100">
                   {filteredCustomers.length > 0 ? (
                     filteredCustomers.map(cust => {
-                      const cName = cust.name.trim().toLowerCase();
-                      const isWalkInCust = (cust.id === 'cust-freelance' || cust.id === 'c4' || cName === 'freelance' || cName === 'frelance') ||
-                                           (cust.id === 'cust-khach-le' || cust.id === 'c5' || cName === 'khách lẻ' || cName === 'khach le');
+                      const isWalkInCust = isWalkInPoolCustomer(cust);
                       return (
                         <button
                           key={cust.id}
@@ -1415,18 +1389,19 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
                               <p className="font-semibold text-xs text-slate-900 group-hover:text-amber-700">
                                 {cust.name} {cust.studioName ? `(${cust.studioName})` : ''}
                               </p>
-                              {isWalkInCust ? (
+                              {isWalkInCust && (
                                 <span className="text-[10px] font-bold px-1.5 py-0.2 rounded-full bg-amber-100 text-amber-800 border border-amber-200">
                                   Tệp vãng lai
                                 </span>
-                              ) : cust.customerType === 'Freelance' ? (
-                                <span className="text-[10px] font-bold px-1.5 py-0.2 rounded-full bg-amber-50 text-amber-800 border border-amber-300">
-                                  Freelance cố định
+                              )}
+                              {cust.customerType === 'Freelance' && !isWalkInCust && (
+                                <span className="text-[10px] font-bold px-1.5 py-0.2 rounded-full bg-amber-50 text-amber-700 border border-amber-200">
+                                  Freelance
                                 </span>
-                              ) : null}
+                              )}
                             </div>
                             <p className="text-[11px] text-slate-500">
-                              {isWalkInCust ? '👥 Khách ghé 1-2 lần • Ghi tên riêng khi lên đơn' : `${cust.phone || 'Chưa SĐT'} • ${cust.address || 'Hà Nội'}`}
+                              {isWalkInCust ? '👥 Khách ghé 1-2 lần • Ghi tên riêng khi lên đơn' : `${cust.phone || 'Chưa có SĐT'} • ${cust.address || 'Hà Nội'}`}
                             </p>
                           </div>
                           {cust.initialDebt > 0 && (
@@ -1496,15 +1471,15 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
               <div className="md:col-span-12 p-3.5 bg-gradient-to-r from-amber-50 via-orange-50/60 to-amber-50 border-2 border-amber-300 rounded-2xl shadow-xs animate-in fade-in duration-200">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 mb-2">
                   <label className="text-xs font-extrabold text-amber-950 flex items-center gap-1.5">
-                    {isFreelance ? <Camera className="w-4 h-4 text-amber-600" /> : <User className="w-4 h-4 text-emerald-600" />}
+                    {isFreelanceWalkIn ? <Camera className="w-4 h-4 text-amber-600" /> : <User className="w-4 h-4 text-emerald-600" />}
                     <span>
-                      Nhập tên riêng cho {isFreelance ? 'thợ Freelance' : 'khách lẻ'} này:
+                      Nhập tên riêng cho {isFreelanceWalkIn ? 'thợ Freelance vãng lai' : 'khách lẻ'} này:
                     </span>
                     <span className="text-red-500 font-bold">*</span>
                   </label>
                   <span className="text-[10px] font-bold text-emerald-800 bg-emerald-100 px-2.5 py-0.5 rounded-full border border-emerald-300 inline-flex items-center gap-1 self-start sm:self-auto">
                     <span>🛡️ Khi chụp ảnh gửi khách:</span>
-                    <strong className="underline">Ẩn 2 từ "{isFreelance ? 'Freelance' : 'Khách Lẻ'}"</strong>
+                    <strong className="underline">Ẩn 2 từ "{isFreelanceWalkIn ? 'Freelance' : 'Khách Lẻ'}"</strong>
                   </span>
                 </div>
 
@@ -1514,7 +1489,7 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
                       type="text"
                       value={guestName}
                       onChange={(e) => setGuestName(e.target.value)}
-                      placeholder={isFreelance ? "VD: Anh Tuấn, Thợ Nam, Studio Mai Long freelance..." : "VD: Chị Mai, Anh Hùng, Chú Ba, Bác Nam..."}
+                      placeholder={isFreelanceWalkIn ? "VD: Anh Tuấn, Thợ Nam, Studio Mai Long freelance..." : "VD: Chị Mai, Anh Hùng, Chú Ba, Bác Nam..."}
                       className="w-full px-3 py-2 bg-white border border-amber-400 rounded-xl text-xs font-bold text-slate-950 focus:ring-2 focus:ring-amber-500 outline-hidden shadow-2xs placeholder:font-normal placeholder:text-slate-400"
                       autoFocus
                     />
@@ -1523,7 +1498,7 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
                     <div className="truncate">
                       📋 <span className="font-semibold text-slate-600">Sổ nợ & thống kê nội bộ:</span>{' '}
                       <strong className="text-slate-900 font-mono">
-                        {isFreelance ? 'Freelance' : 'Khách Lẻ'}{guestName.trim() ? ` - ${guestName.trim()}` : ''}
+                        {isFreelanceWalkIn ? 'Freelance' : 'Khách Lẻ'}{guestName.trim() ? ` - ${guestName.trim()}` : ''}
                       </strong>
                     </div>
                     <div className="truncate">

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Product, Customer, Order, OrderStatus, WorkshopInfo, Material, StockImportReceipt, StudioCombo, InkImportRecord } from './types';
+import { Product, Customer, Order, OrderStatus, WorkshopInfo, Material, StockImportReceipt, StudioCombo, InkImportRecord, ArchivedDeletedCustomerRevenue } from './types';
 import { calculateCustomerDebt } from './utils/storage';
 import {
   subscribeProducts, saveProductToFirestore, deleteProductFromFirestore,
@@ -10,6 +10,7 @@ import {
   subscribeCombos, saveComboToFirestore, deleteComboFromFirestore,
   subscribeWorkshopInfo, saveWorkshopInfoToFirestore,
   subscribeInkImports, saveInkImportToFirestore, deleteInkImportFromFirestore, resetInkYearInFirestore,
+  subscribeArchivedCustomerRevenues, saveArchivedCustomerRevenuesToFirestore, getLocalArchivedCustomerRevenues,
   AuthUserContext
 } from './services/firestoreService';
 import { subscribeAuthState, logoutUser } from './services/authService';
@@ -69,6 +70,7 @@ export default function App() {
   const [stockImports, setStockImports] = useState<StockImportReceipt[]>([]);
   const [inkImports, setInkImports] = useState<InkImportRecord[]>([]);
   const [combos, setCombos] = useState<StudioCombo[]>([]);
+  const [archivedDeletedCustomerRevenues, setArchivedDeletedCustomerRevenues] = useState<ArchivedDeletedCustomerRevenue[]>(() => getLocalArchivedCustomerRevenues());
   const [workshop, setWorkshop] = useState<WorkshopInfo>(DEFAULT_WORKSHOP_INFO);
   const [firestoreStatus, setFirestoreStatus] = useState<'connected' | 'syncing' | 'offline'>('syncing');
 
@@ -214,6 +216,10 @@ export default function App() {
       markLoaded();
     });
 
+    const unsubArchivedRevenues = subscribeArchivedCustomerRevenues((data) => {
+      setArchivedDeletedCustomerRevenues(data || []);
+    });
+
     return () => {
       clearTimeout(safetyTimer);
       unsubWorkshop();
@@ -224,6 +230,7 @@ export default function App() {
       unsubStockImports();
       unsubCombos();
       unsubInk();
+      unsubArchivedRevenues();
     };
   }, [currentUser]);
 
@@ -407,6 +414,66 @@ export default function App() {
   };
 
   const handleDeleteCustomer = (customerId: string) => {
+    const cust = customers.find(c => c.id === customerId);
+    if (cust) {
+      // Bảo lưu toàn bộ Tổng Doanh Thu Năm của khách hàng này trong hệ thống
+      const targetYears = new Set<number>();
+      targetYears.add(new Date().getFullYear());
+      if (cust.initialYearlyRevenues) {
+        Object.keys(cust.initialYearlyRevenues).forEach(y => {
+          const numY = Number(y);
+          if (!isNaN(numY)) targetYears.add(numY);
+        });
+      }
+      if (cust.initialYearlyRevenue) {
+        targetYears.add(new Date().getFullYear());
+      }
+      orders.filter(o => o.customerId === customerId && o.status !== 'cancelled').forEach(o => {
+        if (o.date) {
+          const y = new Date(o.date).getFullYear();
+          if (!isNaN(y)) targetYears.add(y);
+        }
+      });
+
+      const yearlyMap: Record<number, { manualBaseline: number; ordersRevenue: number; total: number }> = {};
+
+      targetYears.forEach(year => {
+        const startOfYear = `${year}-01-01`;
+        const endOfYear = `${year}-12-31`;
+
+        const manualBaseline = (cust.initialYearlyRevenues && cust.initialYearlyRevenues[year] !== undefined)
+          ? (cust.initialYearlyRevenues[year] || 0)
+          : (year === new Date().getFullYear() ? (cust.initialYearlyRevenue || 0) : 0);
+
+        const ordersRevenue = orders
+          .filter(o => o.customerId === customerId && o.status !== 'cancelled')
+          .filter(o => {
+            if (!o.date) return false;
+            const oYear = new Date(o.date).getFullYear();
+            return oYear === year || (o.date >= startOfYear && o.date <= endOfYear);
+          })
+          .reduce((sum, o) => sum + (o.subtotal - (o.discount || 0)), 0);
+
+        const total = manualBaseline + ordersRevenue;
+        if (total > 0) {
+          yearlyMap[year] = { manualBaseline, ordersRevenue, total };
+        }
+      });
+
+      if (Object.keys(yearlyMap).length > 0) {
+        const record: ArchivedDeletedCustomerRevenue = {
+          customerId: cust.id,
+          customerName: cust.name,
+          studioName: cust.studioName,
+          deletedAt: new Date().toISOString(),
+          yearlyRevenues: yearlyMap
+        };
+        const nextList = [...archivedDeletedCustomerRevenues.filter(r => r.customerId !== customerId), record];
+        setArchivedDeletedCustomerRevenues(nextList);
+        saveArchivedCustomerRevenuesToFirestore(nextList, userContext).catch(console.error);
+      }
+    }
+
     setCustomers(prev => prev.filter(c => c.id !== customerId));
     deleteCustomerFromFirestore(customerId).catch(console.error);
   };
@@ -796,6 +863,7 @@ export default function App() {
             customers={partnerCustomers}
             currentUserEmail={currentUser?.email}
             onResetYearData={isPartnerMode() ? undefined : handleResetYearData}
+            archivedDeletedRevenues={archivedDeletedCustomerRevenues}
           />
         )}
 
@@ -825,6 +893,7 @@ export default function App() {
             onViewCustomerOrders={(cId) => {
               handleSelectTab('orders');
             }}
+            archivedDeletedRevenues={archivedDeletedCustomerRevenues}
           />
         )}
       </main>

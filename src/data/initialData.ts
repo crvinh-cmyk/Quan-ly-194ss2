@@ -313,26 +313,13 @@ export const DEFAULT_CUSTOMERS: Customer[] = [
     initialYearlyRevenue: 5000000
   },
   {
-    id: 'c-phuoc-cong',
-    name: 'Phước Công',
-    phone: '0979 888 666',
-    studioName: 'Phước Công Freelance',
-    address: 'Hà Nội',
-    initialDebt: 0,
-    customerType: 'Freelance',
-    notes: 'Khách Freelance cố định in ảnh đều đặn tại xưởng (áp dụng Bảng giá Freelance, theo dõi công nợ & doanh thu riêng biệt)',
-    createdAt: '2026-03-10',
-    initialYearlyRevenue: 12000000
-  },
-  {
     id: 'c4',
-    name: 'Freelance',
+    name: 'Tổng hợp Freelance Doanh số ít',
     phone: '',
-    studioName: 'Freelance / Thợ tự do',
+    studioName: 'Freelance vãng lai (Doanh số ít)',
     address: 'Vãng lai tại tiệm',
     initialDebt: 0,
     customerType: 'Freelance',
-    isWalkInPool: true,
     notes: 'Tệp khách Freelance vãng lai ghé tiệm in 1-2 lần (có thể ghi tên riêng từng người khi lên đơn)',
     createdAt: '2026-04-12',
     initialYearlyRevenue: 0
@@ -345,7 +332,6 @@ export const DEFAULT_CUSTOMERS: Customer[] = [
     address: 'Vãng lai tại tiệm',
     initialDebt: 0,
     customerType: 'Khách Lẻ',
-    isWalkInPool: true,
     notes: 'Tệp khách lẻ in ảnh gia đình, tiệc vãng lai ghé tiệm 1-2 lần (có thể ghi tên riêng từng người khi lên đơn)',
     createdAt: '2026-05-20',
     initialYearlyRevenue: 0

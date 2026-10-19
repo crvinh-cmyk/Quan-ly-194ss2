@@ -170,6 +170,68 @@ export const readMoney = numberToVietnameseWords;
 export const numberToWords = numberToVietnameseWords;
 
 /**
+ * Nhận diện duy nhất tệp khách Freelance vãng lai (không tạo khách mới):
+ * Theo quy định của tiệm: "Tổng hợp Freelance Doanh số ít" là tệp vãng lai DUY NHẤT trong số các khách Freelance.
+ * Mọi khách Studio hoặc khách Freelance có tên riêng/studio riêng TUYỆT ĐỐI KHÔNG phải là tệp vãng lai.
+ */
+export function isFreelanceWalkInPool(cust?: { id?: string; name?: string; studioName?: string; customerType?: string } | null): boolean {
+  if (!cust) return false;
+  // 1. TUYỆT ĐỐI không áp dụng cho khách Studio
+  if (cust.customerType === 'GIÁ STUDIO') return false;
+  // 2. Chỉ xét khách có phân loại Freelance
+  if (cust.customerType !== 'Freelance') return false;
+
+  const name = (cust.name || '').toLowerCase().trim();
+  const studio = (cust.studioName || '').toLowerCase().trim();
+
+  // Khách có tên hoặc studio riêng (như Son Studio, OH Studio, Studio Áo Cưới...) tuyệt đối không phải vãng lai
+  if (name.includes('studio') || studio.includes('studio')) {
+    return false;
+  }
+
+  // CHỈ DUY NHẤT khách có tên chứa "tổng hợp freelance" hoặc "doanh số ít"
+  if (name.includes('tổng hợp freelance') || name.includes('doanh số ít') || studio.includes('doanh số ít')) {
+    return true;
+  }
+  if ((name === 'freelance' || name === 'frelance') && (studio.includes('vãng lai') || studio.includes('tự do'))) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Nhận diện tệp Khách Lẻ vãng lai (in ảnh gia đình, tiệc ghé 1-2 lần)
+ */
+export function isRetailWalkInPool(cust?: { id?: string; name?: string; studioName?: string; customerType?: string } | null): boolean {
+  if (!cust) return false;
+  // 1. TUYỆT ĐỐI không áp dụng cho khách Studio
+  if (cust.customerType === 'GIÁ STUDIO') return false;
+  // 2. Chỉ xét khách có phân loại Khách Lẻ
+  if (cust.customerType !== 'Khách Lẻ') return false;
+
+  const name = (cust.name || '').toLowerCase().trim();
+  const studio = (cust.studioName || '').toLowerCase().trim();
+
+  if (name.includes('studio') || studio.includes('studio')) {
+    return false;
+  }
+
+  if (name === 'khách lẻ' || name === 'khach le' || name.startsWith('khách lẻ vãng lai')) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Kiểm tra xem khách hàng có phải là 1 trong 2 Tệp Vãng Lai gom chung không
+ */
+export function isWalkInPoolCustomer(cust?: { id?: string; name?: string; studioName?: string; customerType?: string } | null): boolean {
+  if (!cust) return false;
+  if (cust.customerType === 'GIÁ STUDIO') return false;
+  return isFreelanceWalkInPool(cust) || isRetailWalkInPool(cust);
+}
+
+/**
  * Lấy tên hiển thị trang trọng cho khách hàng khi chụp ảnh hóa đơn / xuất hóa đơn gửi khách.
  * Ẩn bỏ hoàn toàn 2 từ "Khách Lẻ" và "Freelance" (hoặc Frelance) theo yêu cầu của tiệm.
  * Nếu có tên khách lẻ / freelance riêng (guestName hoặc được viết sau dấu gạch), chỉ hiện tên riêng đó (VD: 'Anh Tuấn', 'Chị Mai').
@@ -182,11 +244,11 @@ export function getCustomerFacingName(order?: { customerName?: string; guestName
   if (order.guestName && order.guestName.trim()) {
     let clean = order.guestName.trim();
     clean = clean
-      .replace(/^(?:khách\s*lẻ|khach\s*le|freelance|frelance|thợ\s*freelance|vãng\s*lai)\s*[-:–—\s(]*/gi, '')
-      .replace(/\s*[-:–—\s)]*(?:khách\s*lẻ|khach\s*le|freelance|frelance|thợ\s*freelance|vãng\s*lai)\s*$/gi, '')
+      .replace(/^(?:tổng\s*hợp\s*freelance\s*doanh\s*số\s*ít|tổng\s*hợp\s*freelance|khách\s*lẻ|khach\s*le|freelance|frelance|thợ\s*freelance|vãng\s*lai)\s*[-:–—\s(]*/gi, '')
+      .replace(/\s*[-:–—\s)]*(?:tổng\s*hợp\s*freelance\s*doanh\s*số\s*ít|tổng\s*hợp\s*freelance|khách\s*lẻ|khach\s*le|freelance|frelance|thợ\s*freelance|vãng\s*lai)\s*$/gi, '')
       .replace(/[()]/g, '')
       .trim();
-    if (clean && !/^(?:khách\s*lẻ|khach\s*le|freelance|frelance|thợ\s*freelance|vãng\s*lai)$/i.test(clean)) {
+    if (clean && !/^(?:tổng\s*hợp\s*freelance\s*doanh\s*số\s*ít|tổng\s*hợp\s*freelance|khách\s*lẻ|khach\s*le|freelance|frelance|thợ\s*freelance|vãng\s*lai)$/i.test(clean)) {
       return clean;
     }
   }
@@ -195,63 +257,42 @@ export function getCustomerFacingName(order?: { customerName?: string; guestName
   let rawName = (order.customerName || '').trim();
   if (!rawName) return 'Quý Khách';
 
-  // Bóc tách nếu tên lưu dạng "Khách Lẻ - Anh Tuấn" hoặc "Freelance - Chị Lan" hoặc "Khách Lẻ (Anh Tuấn)"
-  const prefixMatch = rawName.match(/^(?:khách\s*lẻ|khach\s*le|freelance|frelance|thợ\s*freelance|khách\s*vãng\s*lai)\s*[-:–—\s(]+([^)]+)\)?$/i);
+  // Nếu là tên tệp vãng lai thuần túy không có tên riêng đính kèm
+  if (/^(?:tổng\s*hợp\s*freelance\s*doanh\s*số\s*ít|tổng\s*hợp\s*freelance|khách\s*lẻ|khach\s*le|freelance|frelance)$/i.test(rawName)) {
+    return 'Quý Khách';
+  }
+
+  // Bóc tách nếu tên lưu dạng "Tổng hợp Freelance Doanh số ít - Anh Tuấn" hoặc "Freelance - Anh Tuấn" hoặc "Khách Lẻ - Anh Tuấn"
+  const prefixMatch = rawName.match(/^(?:tổng\s*hợp\s*freelance\s*doanh\s*số\s*ít|tổng\s*hợp\s*freelance|khách\s*lẻ|khach\s*le|freelance|frelance|thợ\s*freelance|khách\s*vãng\s*lai)\s*[-:–—\s(]+([^)]+)\)?$/i);
   if (prefixMatch && prefixMatch[1] && prefixMatch[1].trim()) {
     const extracted = prefixMatch[1].trim();
-    if (!/^(?:khách\s*lẻ|khach\s*le|freelance|frelance|thợ\s*freelance|khách\s*vãng\s*lai)$/i.test(extracted)) {
+    if (!/^(?:tổng\s*hợp\s*freelance|khách\s*lẻ|khach\s*le|freelance|frelance|thợ\s*freelance|khách\s*vãng\s*lai)$/i.test(extracted)) {
       return extracted;
     }
   }
 
-  // Bóc tách nếu tên có dạng "Tên (Khách Lẻ...)" ví dụ: "Chị Mai Hương (Khách Lẻ In Ảnh Gia Đình)"
-  const suffixInParens = rawName.match(/^([^(]+)\s*\((?:khách\s*lẻ|khach\s*le|freelance|frelance)[^)]*\)$/i);
+  // Bóc tách nếu tên có dạng "Tên (Freelance...)" hoặc "Tên (Khách Lẻ...)" ví dụ: "Anh Duy (Freelance)" -> "Anh Duy"
+  const suffixInParens = rawName.match(/^([^(]+)\s*\((?:tổng\s*hợp\s*freelance|khách\s*lẻ|khach\s*le|freelance|frelance)[^)]*\)$/i);
   if (suffixInParens && suffixInParens[1] && suffixInParens[1].trim()) {
     const extracted = suffixInParens[1].trim();
-    if (!/^(?:khách\s*lẻ|khach\s*le|freelance|frelance)$/i.test(extracted)) {
+    if (!/^(?:tổng\s*hợp\s*freelance|khách\s*lẻ|khach\s*le|freelance|frelance)$/i.test(extracted)) {
       return extracted;
     }
   }
 
-  // Lọc sạch các từ khóa "khách lẻ", "freelance"
+  // Lọc sạch các từ khóa "tổng hợp freelance", "khách lẻ", "freelance" khỏi tên khách hàng
   let cleanName = rawName
-    .replace(/\s*\((?:khách\s*lẻ|khach\s*le|freelance|frelance)[^)]*\)/gi, '')
-    .replace(/^(?:khách\s*lẻ|khach\s*le|freelance|frelance)\s*[-:–—\s(]*/gi, '')
-    .replace(/\s*[-:–—\s)]*(?:khách\s*lẻ|khach\s*le|freelance|frelance)\s*$/gi, '')
+    .replace(/\s*\((?:tổng\s*hợp\s*freelance|khách\s*lẻ|khach\s*le|freelance|frelance)[^)]*\)/gi, '')
+    .replace(/^(?:tổng\s*hợp\s*freelance\s*doanh\s*số\s*ít|tổng\s*hợp\s*freelance|khách\s*lẻ|khach\s*le|freelance|frelance)\s*[-:–—\s(]*/gi, '')
+    .replace(/\s*[-:–—\s)]*(?:tổng\s*hợp\s*freelance\s*doanh\s*số\s*ít|tổng\s*hợp\s*freelance|khách\s*lẻ|khach\s*le|freelance|frelance)\s*$/gi, '')
     .replace(/[()]/g, '')
     .trim();
 
-  // Nếu chuỗi còn lại rỗng hoặc chỉ còn đúng từ Khách Lẻ / Freelance
-  if (!cleanName || /^(?:khách\s*lẻ|khach\s*le|freelance|frelance)$/i.test(cleanName)) {
+  // Nếu chuỗi còn lại rỗng hoặc chỉ còn từ cấm
+  if (!cleanName || /^(?:tổng\s*hợp\s*freelance\s*doanh\s*số\s*ít|tổng\s*hợp\s*freelance|khách\s*lẻ|khach\s*le|freelance|frelance)$/i.test(cleanName)) {
     return 'Quý Khách';
   }
 
   return cleanName;
-}
-
-/**
- * Phân biệt rạch ròi giữa tệp Vãng Lai (pool gom chung) và Khách Hàng Cố Định.
- * CHỈ tệp vãng lai của hệ thống (ID 'cust-freelance', 'c4', 'cust-khach-le', 'c5' hoặc flag isWalkInPool) mới là tệp vãng lai gom chung.
- * Mọi khách cố định khác (như Phước Công, Studio Hoàng Gia...) có hồ sơ riêng, công nợ riêng, KHÔNG phải tệp vãng lai.
- */
-export function isWalkInPoolCustomer(c?: { id?: string; name?: string; isWalkInPool?: boolean } | null): boolean {
-  if (!c) return false;
-  if (c.isWalkInPool === true) return true;
-  const id = (c.id || '').trim().toLowerCase();
-  const name = (c.name || '').trim().toLowerCase();
-
-  // Exact system IDs
-  if (id === 'cust-freelance' || id === 'c4') return true;
-  if (id === 'cust-khach-le' || id === 'c5') return true;
-
-  // Exact match on default name when no custom ID or matches pool
-  if (name === 'freelance' || name === 'frelance') {
-    return id === 'cust-freelance' || id === 'c4' || !id;
-  }
-  if (name === 'khách lẻ' || name === 'khach le') {
-    return id === 'cust-khach-le' || id === 'c5' || !id;
-  }
-
-  return false;
 }
 

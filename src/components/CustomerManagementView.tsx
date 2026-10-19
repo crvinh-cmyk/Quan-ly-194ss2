@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from 'react';
-import { Customer, Order, ProductCategory, WorkshopInfo } from '../types';
+import { Customer, Order, ProductCategory, WorkshopInfo, ArchivedDeletedCustomerRevenue } from '../types';
 import { FavoriteCustomersSection } from './FavoriteCustomersSection';
-import { formatCurrency, formatDateVN, getCustomerFacingName } from '../utils/formatters';
+import { formatCurrency, formatDateVN, getCustomerFacingName, isFreelanceWalkInPool, isRetailWalkInPool, isWalkInPoolCustomer } from '../utils/formatters';
 import { calculateCustomerDebt } from '../utils/storage';
 import {
   Users, Plus, Search, DollarSign, Phone, MapPin, CheckCircle2, History, Star,
@@ -20,6 +20,7 @@ interface CustomerManagementViewProps {
   onRecordDebtPayment: (customerId: string, amount: number, note: string) => void;
   onViewCustomerOrders: (customerId: string) => void;
   onPrintOrder?: (order: Order) => void;
+  archivedDeletedRevenues?: ArchivedDeletedCustomerRevenue[];
 }
 
 export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
@@ -31,7 +32,8 @@ export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
   onDeleteCustomer,
   onRecordDebtPayment,
   onViewCustomerOrders,
-  onPrintOrder
+  onPrintOrder,
+  archivedDeletedRevenues = []
 }) => {
   const [activeSubTab, setActiveSubTab] = useState<'all' | 'favorites'>('all');
   const [toastMsg, setToastMsg] = useState<string>('');
@@ -148,10 +150,20 @@ export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
     return customersWithMetrics.find(c => c.yearlyRevenue === maxYearlyRevenue) || null;
   }, [customersWithMetrics, maxYearlyRevenue]);
 
-  // Tổng doanh thu năm của tất cả khách hàng
+  // Doanh thu bảo lưu từ các khách hàng đã từng xóa thủ công trong năm được chọn
+  const totalArchivedYearlyRevenue = useMemo(() => {
+    if (!archivedDeletedRevenues || archivedDeletedRevenues.length === 0) return 0;
+    return archivedDeletedRevenues.reduce((sum, r) => {
+      const yrData = r.yearlyRevenues?.[selectedYear];
+      return sum + (yrData?.total || 0);
+    }, 0);
+  }, [archivedDeletedRevenues, selectedYear]);
+
+  // Tổng doanh thu năm của tất cả khách hàng (gồm khách hiện tại + doanh thu đã bảo lưu của khách đã xóa)
   const totalYearlyRevenueAll = useMemo(() => {
-    return customersWithMetrics.reduce((sum, c) => sum + c.yearlyRevenue, 0);
-  }, [customersWithMetrics]);
+    const activeTotal = customersWithMetrics.reduce((sum, c) => sum + c.yearlyRevenue, 0);
+    return activeTotal + totalArchivedYearlyRevenue;
+  }, [customersWithMetrics, totalArchivedYearlyRevenue]);
 
   const totalAllDebt = useMemo(() => {
     return customersWithMetrics.reduce((sum, c) => sum + c.currentDebt, 0);
@@ -315,14 +327,27 @@ export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
   // Orders belonging to currently viewed customer
   const viewingCustomerOrders = useMemo(() => {
     if (!viewingOrdersCustomer) return [];
+    const isFlWalkIn = isFreelanceWalkInPool(viewingOrdersCustomer);
+    const isKlWalkIn = isRetailWalkInPool(viewingOrdersCustomer);
+
     return orders
-      .filter(o => o.customerId === viewingOrdersCustomer.id || (
-        (viewingOrdersCustomer.name.toLowerCase() === 'khách lẻ' || viewingOrdersCustomer.customerType === 'Khách Lẻ') &&
-        (o.customerName.toLowerCase().startsWith('khách lẻ') || o.customerName.toLowerCase().startsWith('khach le'))
-      ) || (
-        (viewingOrdersCustomer.name.toLowerCase() === 'freelance' || viewingOrdersCustomer.customerType === 'Freelance') &&
-        (o.customerName.toLowerCase().startsWith('freelance') || o.customerName.toLowerCase().startsWith('frelance'))
-      ))
+      .filter(o => {
+        if (o.customerId === viewingOrdersCustomer.id) return true;
+        if (isKlWalkIn && (
+          o.customerName.toLowerCase().startsWith('khách lẻ') ||
+          o.customerName.toLowerCase().startsWith('khach le')
+        )) {
+          return true;
+        }
+        if (isFlWalkIn && (
+          o.customerName.toLowerCase().startsWith('freelance') ||
+          o.customerName.toLowerCase().startsWith('frelance') ||
+          o.customerName.toLowerCase().startsWith('tổng hợp freelance')
+        )) {
+          return true;
+        }
+        return false;
+      })
       .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime() || b.createdAt.localeCompare(a.createdAt));
   }, [viewingOrdersCustomer, orders]);
 
@@ -358,10 +383,18 @@ export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
           </div>
 
           {/* Total Yearly Revenue Pill */}
-          <div className="px-3 py-1.5 bg-amber-50 border border-amber-300 rounded-xl text-xs font-bold text-amber-950 flex items-center gap-1.5 shadow-2xs">
+          <div
+            className="px-3 py-1.5 bg-amber-50 border border-amber-300 rounded-xl text-xs font-bold text-amber-950 flex items-center gap-1.5 shadow-2xs"
+            title={totalArchivedYearlyRevenue > 0 ? `Bao gồm ${formatCurrency(totalArchivedYearlyRevenue)} doanh thu bảo lưu từ khách hàng đã xóa` : undefined}
+          >
             <Award className="w-3.5 h-3.5 text-amber-600 shrink-0" />
             <span className="text-slate-700">Tổng DT năm {selectedYear}:</span>
             <span className="font-mono text-amber-700 font-bold">{formatCurrency(totalYearlyRevenueAll)}</span>
+            {totalArchivedYearlyRevenue > 0 && (
+              <span className="text-[10px] text-amber-900 bg-amber-200/80 px-1.5 py-0.5 rounded-md font-semibold">
+                (Đã gồm DT khách xóa)
+              </span>
+            )}
           </div>
 
           <button
@@ -577,8 +610,8 @@ export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
                       </span>
                     )}
 
-                    {/* Ghi chú tệp khách vãng lai */}
-                    {(cust.customerType === 'Khách Lẻ' || cust.customerType === 'Freelance' || cust.name.toLowerCase() === 'khách lẻ' || cust.name.toLowerCase() === 'freelance') && (
+                    {/* Ghi chú tệp khách vãng lai (CHỈ hiển thị cho duy nhất "Tổng hợp Freelance Doanh số ít" và "Khách Lẻ") */}
+                    {isWalkInPoolCustomer(cust) && (
                       <div className="mt-2 p-2 rounded-xl bg-amber-50/70 border border-amber-200/90 text-[11px] text-amber-950">
                         <div className="flex items-center gap-1.5 font-bold text-amber-900">
                           <Users className="w-3.5 h-3.5 text-amber-600 shrink-0" />
@@ -1109,7 +1142,7 @@ export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
                         {viewingOrdersCustomer.studioName}
                       </span>
                     )}
-                    {(viewingOrdersCustomer.customerType === 'Khách Lẻ' || viewingOrdersCustomer.customerType === 'Freelance') && (
+                    {isWalkInPoolCustomer(viewingOrdersCustomer) && (
                       <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500 text-slate-950">
                         👥 Tệp Vãng Lai
                       </span>
@@ -1136,7 +1169,7 @@ export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
             </div>
 
             {/* Explanatory Notice for Walk-in Categories */}
-            {(viewingOrdersCustomer.customerType === 'Khách Lẻ' || viewingOrdersCustomer.customerType === 'Freelance') && (
+            {isWalkInPoolCustomer(viewingOrdersCustomer) && (
               <div className="p-3 bg-amber-50 border-b border-amber-200 text-xs text-amber-950 flex items-start gap-2">
                 <Sparkles className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
                 <div className="leading-relaxed">
@@ -1286,6 +1319,9 @@ export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
                 {customerToDelete.phone && (
                   <p className="text-slate-500 font-mono text-[11px]">SĐT: {customerToDelete.phone}</p>
                 )}
+              </div>
+              <div className="p-2.5 bg-emerald-50 rounded-xl border border-emerald-200 text-emerald-900 text-[11px] leading-relaxed">
+                🛡️ <strong>Bảo lưu doanh thu:</strong> Khi xóa khách hàng này, <strong>toàn bộ Tổng doanh thu năm</strong> đã phát sinh của khách sẽ được hệ thống <strong>bảo lưu vĩnh viễn</strong> trong tổng doanh thu của tiệm.
               </div>
             </div>
             <div className="p-3 bg-slate-50 border-t border-slate-200 flex justify-end gap-2">

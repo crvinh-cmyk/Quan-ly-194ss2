@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { Order, OrderItem, MaterialDeduction, Product, StockImportReceipt, Customer, ProductCostMap, BoardCorePriceMap } from '../types';
+import { Order, OrderItem, MaterialDeduction, Product, StockImportReceipt, Customer, ProductCostMap, BoardCorePriceMap, ArchivedDeletedCustomerRevenue } from '../types';
 import { formatCurrency } from '../utils/formatters';
 import { isPartnerMode, getDisplayPrice } from '../utils/partnerConfig';
 import {
@@ -25,6 +25,7 @@ interface AnalyticsViewProps {
   customers?: Customer[];
   currentUserEmail?: string | null;
   onResetYearData?: (year: number, resetType: 'all' | 'ordersOnly' | 'baselineOnly') => void;
+  archivedDeletedRevenues?: ArchivedDeletedCustomerRevenue[];
 }
 
 export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
@@ -32,7 +33,8 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
   products,
   customers = [],
   currentUserEmail,
-  onResetYearData
+  onResetYearData,
+  archivedDeletedRevenues = []
 }) => {
   // Current real year
   const currentRealYear = new Date().getFullYear();
@@ -150,15 +152,19 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
     });
   }, [orders, selectedYear, selectedMonth]);
 
-  // Tổng doanh thu đầu kỳ của tất cả khách hàng (từ Quản Lý Khách Hàng, Studio & Sổ Nợ Tiệm In 194)
+  // Tổng doanh thu đầu kỳ của tất cả khách hàng (gồm khách hiện tại + khách đã xóa)
   const totalCustomersInitialRevenue = useMemo(() => {
-    return customers.reduce((sum, c) => {
+    const activeManual = customers.reduce((sum, c) => {
       const manual = (c.initialYearlyRevenues && c.initialYearlyRevenues[selectedYear] !== undefined)
         ? (c.initialYearlyRevenues[selectedYear] || 0)
         : (c.initialYearlyRevenue || 0);
       return sum + manual;
     }, 0);
-  }, [customers, selectedYear]);
+    const archivedManual = archivedDeletedRevenues.reduce((sum, r) => {
+      return sum + (r.yearlyRevenues?.[selectedYear]?.manualBaseline || 0);
+    }, 0);
+    return activeManual + archivedManual;
+  }, [customers, selectedYear, archivedDeletedRevenues]);
 
   // Doanh thu từ hóa đơn phát sinh trên app trong kỳ
   const ordersRevenue = useMemo(() => {
