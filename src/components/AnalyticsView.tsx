@@ -1,11 +1,12 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { Order, OrderItem, MaterialDeduction, Product, StockImportReceipt, Customer, ProductCostMap, BoardCorePriceMap, ArchivedDeletedCustomerRevenue } from '../types';
+import { Order, OrderItem, MaterialDeduction, Product, StockImportReceipt, Customer, ProductCostMap, BoardCorePriceMap, ArchivedDeletedCustomerRevenue, MonthOtherExpenses, OtherExpensesMap } from '../types';
 import { formatCurrency } from '../utils/formatters';
 import { isPartnerMode, getDisplayPrice } from '../utils/partnerConfig';
 import {
   Calendar, DollarSign, Award, BarChart3, RotateCcw,
   Sparkles, CheckCircle2, Flame, ArrowDown, TrendingUp, Coins,
-  Table2, ShieldAlert, Layers, Percent, TrendingDown
+  Table2, ShieldAlert, Layers, Percent, TrendingDown,
+  Wallet, Receipt, Home, Zap, Droplets, Users, Copy, Check
 } from 'lucide-react';
 import { ProductCostAnalyticsTable, computeProductCostLookupMap } from './ProductCostAnalyticsTable';
 import {
@@ -15,7 +16,10 @@ import {
   subscribeProductCosts,
   getLocalProductCosts,
   subscribeBoardCorePrices,
-  getLocalBoardCorePrices
+  getLocalBoardCorePrices,
+  subscribeOtherExpenses,
+  saveOtherExpensesToFirestore,
+  getLocalOtherExpenses
 } from '../services/firestoreService';
 
 interface AnalyticsViewProps {
@@ -27,6 +31,48 @@ interface AnalyticsViewProps {
   onResetYearData?: (year: number, resetType: 'all' | 'ordersOnly' | 'baselineOnly') => void;
   archivedDeletedRevenues?: ArchivedDeletedCustomerRevenue[];
 }
+
+interface ExpenseCellInputProps {
+  value: number;
+  onChange: (val: number) => void;
+  disabled?: boolean;
+  placeholder?: string;
+}
+
+const ExpenseCellInput: React.FC<ExpenseCellInputProps> = ({ value, onChange, disabled, placeholder = '0' }) => {
+  const [isFocused, setIsFocused] = useState(false);
+  const [localText, setLocalText] = useState(() => value ? value.toLocaleString('vi-VN') : '');
+
+  useEffect(() => {
+    if (!isFocused) {
+      setLocalText(value ? value.toLocaleString('vi-VN') : '');
+    }
+  }, [value, isFocused]);
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const rawDigits = e.target.value.replace(/\D/g, '');
+    const num = rawDigits ? parseInt(rawDigits, 10) : 0;
+    setLocalText(num ? num.toLocaleString('vi-VN') : '');
+    onChange(num);
+  };
+
+  return (
+    <input
+      type="text"
+      inputMode="numeric"
+      disabled={disabled}
+      value={localText}
+      placeholder={placeholder}
+      onFocus={() => setIsFocused(true)}
+      onBlur={() => {
+        setIsFocused(false);
+        setLocalText(value ? value.toLocaleString('vi-VN') : '');
+      }}
+      onChange={handleChange}
+      className="w-full text-right px-2.5 py-1.5 bg-white border border-slate-200 hover:border-slate-300 focus:border-rose-500 focus:ring-1 focus:ring-rose-500 rounded-lg text-xs font-mono font-bold text-slate-800 transition outline-hidden placeholder:font-normal placeholder:text-slate-300"
+    />
+  );
+};
 
 export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
   orders,
@@ -44,7 +90,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
   const [selectedYear, setSelectedYear] = useState<number>(currentRealYear);
   const [selectedMonth, setSelectedMonth] = useState<number | 'all'>('all'); // 1-12 or 'all'
   const [dailyMonth, setDailyMonth] = useState<number>(currentRealMonth);
-  const [activeSubTab, setActiveSubTab] = useState<'all' | 'monthly' | 'daily'>('all');
+  const [activeSubTab, setActiveSubTab] = useState<'all' | 'monthly' | 'expenses' | 'daily'>('all');
   const [activeMainSection, setActiveMainSection] = useState<'sales' | 'product_cost'>('sales');
 
   // Khấu trừ doanh thu thủ công theo từng tháng / năm
@@ -52,10 +98,25 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
     getLocalRevenueDeductions()
   );
 
+  // Chi phí khác nhập thủ công theo từng tháng / năm (Lương, Mặt bằng, Điện, Nước, Phát sinh)
+  const [otherExpenses, setOtherExpenses] = useState<OtherExpensesMap>(() =>
+    getLocalOtherExpenses()
+  );
+
   // Lắng nghe dữ liệu khấu trừ doanh thu thời gian thực từ Cloud Firestore
   useEffect(() => {
     const unsub = subscribeRevenueDeductions((data) => {
       setRevenueDeductions(data);
+    });
+    return () => {
+      if (typeof unsub === 'function') unsub();
+    };
+  }, []);
+
+  // Lắng nghe dữ liệu Chi Phí Khác thời gian thực từ Cloud Firestore
+  useEffect(() => {
+    const unsub = subscribeOtherExpenses((data) => {
+      setOtherExpenses(data);
     });
     return () => {
       if (typeof unsub === 'function') unsub();
@@ -110,6 +171,53 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
     saveRevenueDeductionsToFirestore(nextMap, { email: currentUserEmail }).catch(err => {
       console.error('Lỗi lưu khấu trừ doanh thu lên Firestore:', err);
     });
+  };
+
+  // Cập nhật từng ô Chi Phí Khác nhập thủ công (Lương, Mặt bằng, Điện, Nước, Khác)
+  const handleUpdateExpenseField = (month: number, field: keyof MonthOtherExpenses, val: number) => {
+    if (isPartnerMode()) return;
+    const key = `${selectedYear}-${month}`;
+    const cur = otherExpenses[key] || { salary: 0, rent: 0, electricity: 0, water: 0, other: 0 };
+    const nextMap: OtherExpensesMap = {
+      ...otherExpenses,
+      [key]: {
+        ...cur,
+        [field]: Math.max(0, val)
+      }
+    };
+    setOtherExpenses(nextMap);
+    saveOtherExpensesToFirestore(nextMap, { email: currentUserEmail }).catch(err => {
+      console.error('Lỗi lưu chi phí khác lên Firestore:', err);
+    });
+  };
+
+  const [copiedMonth, setCopiedMonth] = useState<number | null>(null);
+
+  // Sao chép nhanh chi phí của 1 tháng sang các tháng còn lại trong năm
+  const handleCopyMonthExpensesToFuture = (sourceMonth: number) => {
+    if (isPartnerMode()) return;
+    const sourceKey = `${selectedYear}-${sourceMonth}`;
+    const sourceData = otherExpenses[sourceKey];
+    if (!sourceData) return;
+
+    const nextMap: OtherExpensesMap = { ...otherExpenses };
+    for (let m = 1; m <= 12; m++) {
+      if (m === sourceMonth) continue;
+      const targetKey = `${selectedYear}-${m}`;
+      const existing = nextMap[targetKey] || { salary: 0, rent: 0, electricity: 0, water: 0, other: 0 };
+      nextMap[targetKey] = {
+        ...existing,
+        salary: sourceData.salary || 0,
+        rent: sourceData.rent || 0,
+        electricity: sourceData.electricity || 0,
+        water: sourceData.water || 0,
+        other: sourceData.other || 0
+      };
+    }
+    setOtherExpenses(nextMap);
+    saveOtherExpensesToFirestore(nextMap, { email: currentUserEmail }).catch(console.error);
+    setCopiedMonth(sourceMonth);
+    setTimeout(() => setCopiedMonth(null), 2500);
   };
 
   // Reset modal state
@@ -178,6 +286,16 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
       const deductionKey = `${selectedYear}-${mNum}`;
       const rawDeduction = revenueDeductions[deductionKey] || 0;
       const deduction = isPartnerMode() ? getDisplayPrice(rawDeduction) : rawDeduction;
+
+      // Chi phí khác của từng tháng lấy chính xác từ otherExpenses
+      const rawExp = otherExpenses[deductionKey] || { salary: 0, rent: 0, electricity: 0, water: 0, other: 0 };
+      const expSalary = isPartnerMode() ? getDisplayPrice(rawExp.salary || 0) : (rawExp.salary || 0);
+      const expRent = isPartnerMode() ? getDisplayPrice(rawExp.rent || 0) : (rawExp.rent || 0);
+      const expElectricity = isPartnerMode() ? getDisplayPrice(rawExp.electricity || 0) : (rawExp.electricity || 0);
+      const expWater = isPartnerMode() ? getDisplayPrice(rawExp.water || 0) : (rawExp.water || 0);
+      const expOther = isPartnerMode() ? getDisplayPrice(rawExp.other || 0) : (rawExp.other || 0);
+      const otherCost = expSalary + expRent + expElectricity + expWater + expOther;
+
       return {
         month: mNum,
         name: `Th ${mNum}`,
@@ -185,6 +303,8 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
         deduction,
         netRevenue: 0,
         materialCost: 0,
+        otherCost,
+        preTaxProfit: 0,
         grossProfit: 0,
         ordersCount: 0
       };
@@ -229,14 +349,15 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
       }
     });
 
-    // Compute net revenue & gross profit
+    // Compute net revenue & estimated pre-tax profit (= DT thuần - vật tư tiêu hao - chi phí khác)
     months.forEach(m => {
       m.netRevenue = Math.max(0, m.revenue - m.deduction);
-      m.grossProfit = m.netRevenue - m.materialCost;
+      m.preTaxProfit = m.netRevenue - m.materialCost - m.otherCost;
+      m.grossProfit = m.preTaxProfit;
     });
 
     return months;
-  }, [orders, selectedYear, revenueDeductions, productCostLookup, products]);
+  }, [orders, selectedYear, revenueDeductions, otherExpenses, productCostLookup, products]);
 
   // Tổng số liệu cả năm
   const totalYearGrossOrdersRevenue = useMemo(() => {
@@ -255,9 +376,16 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
     return monthlyData.reduce((sum, m) => sum + m.materialCost, 0);
   }, [monthlyData]);
 
-  const totalYearGrossProfit = useMemo(() => {
-    return totalYearNetOrdersRevenue - totalYearMaterialCost;
-  }, [totalYearNetOrdersRevenue, totalYearMaterialCost]);
+  const totalYearOtherCost = useMemo(() => {
+    return monthlyData.reduce((sum, m) => sum + m.otherCost, 0);
+  }, [monthlyData]);
+
+  // Lợi Nhuận Trước Thuế Ước Tính Cả Năm = DT thuần - vật tư tiêu hao - chi phí khác
+  const totalYearPreTaxProfit = useMemo(() => {
+    return totalYearNetOrdersRevenue - totalYearMaterialCost - totalYearOtherCost;
+  }, [totalYearNetOrdersRevenue, totalYearMaterialCost, totalYearOtherCost]);
+
+  const totalYearGrossProfit = totalYearPreTaxProfit;
 
 
   // Tổng doanh thu gộp (Gross Revenue)
@@ -298,6 +426,46 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
     });
     return max;
   }, [monthlyData]);
+
+  // ==========================================
+  // THỐNG KÊ CHI PHÍ KHÁC 12 THÁNG CỦA NĂM
+  // ==========================================
+  const otherExpenses12Months = useMemo(() => {
+    return Array.from({ length: 12 }, (_, i) => {
+      const m = i + 1;
+      const key = `${selectedYear}-${m}`;
+      const raw = otherExpenses[key] || { salary: 0, rent: 0, electricity: 0, water: 0, other: 0 };
+      const salary = isPartnerMode() ? getDisplayPrice(raw.salary || 0) : (raw.salary || 0);
+      const rent = isPartnerMode() ? getDisplayPrice(raw.rent || 0) : (raw.rent || 0);
+      const electricity = isPartnerMode() ? getDisplayPrice(raw.electricity || 0) : (raw.electricity || 0);
+      const water = isPartnerMode() ? getDisplayPrice(raw.water || 0) : (raw.water || 0);
+      const other = isPartnerMode() ? getDisplayPrice(raw.other || 0) : (raw.other || 0);
+      const total = salary + rent + electricity + water + other;
+
+      return {
+        month: m,
+        monthName: `Tháng ${m}`,
+        salary,
+        rent,
+        electricity,
+        water,
+        other,
+        total,
+        rawSalary: raw.salary || 0,
+        rawRent: raw.rent || 0,
+        rawElectricity: raw.electricity || 0,
+        rawWater: raw.water || 0,
+        rawOther: raw.other || 0
+      };
+    });
+  }, [otherExpenses, selectedYear]);
+
+  const yearTotalSalary = useMemo(() => otherExpenses12Months.reduce((s, it) => s + it.salary, 0), [otherExpenses12Months]);
+  const yearTotalRent = useMemo(() => otherExpenses12Months.reduce((s, it) => s + it.rent, 0), [otherExpenses12Months]);
+  const yearTotalElectricity = useMemo(() => otherExpenses12Months.reduce((s, it) => s + it.electricity, 0), [otherExpenses12Months]);
+  const yearTotalWater = useMemo(() => otherExpenses12Months.reduce((s, it) => s + it.water, 0), [otherExpenses12Months]);
+  const yearTotalOtherExpense = useMemo(() => otherExpenses12Months.reduce((s, it) => s + it.other, 0), [otherExpenses12Months]);
+  const yearTotalAllOtherExpenses = useMemo(() => otherExpenses12Months.reduce((s, it) => s + it.total, 0), [otherExpenses12Months]);
 
   // ==========================================
   // THỐNG KÊ DOANH SỐ PHÁT SINH TỪNG NGÀY TRONG THÁNG
@@ -610,7 +778,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
 
       {/* SUB-TAB NAVIGATOR FOR TABLES */}
       <div className="flex items-center justify-between border-b border-slate-200 pb-2">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <button
             type="button"
             onClick={() => setActiveSubTab('all')}
@@ -620,7 +788,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
                 : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
             }`}
           >
-            📑 Hiển thị cả 2 bảng
+            📑 Hiển thị tất cả bảng
           </button>
           <button
             type="button"
@@ -631,7 +799,26 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
                 : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
             }`}
           >
-            📊 Bảng Doanh Số 12 Tháng
+            📊 1. Bảng Doanh Số 12 Tháng
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveSubTab('expenses')}
+            className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer flex items-center gap-1.5 ${
+              activeSubTab === 'expenses'
+                ? 'bg-rose-600 text-white shadow-xs'
+                : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+            }`}
+          >
+            <Wallet className="w-3.5 h-3.5" />
+            <span>2. Bảng Chi Phí Khác (12 Tháng)</span>
+            {yearTotalAllOtherExpenses > 0 && (
+              <span className={`px-1.5 py-0.2 rounded-md text-[10px] font-mono font-bold ${
+                activeSubTab === 'expenses' ? 'bg-rose-800 text-white' : 'bg-rose-100 text-rose-800'
+              }`}>
+                {formatCurrency(yearTotalAllOtherExpenses)}
+              </span>
+            )}
           </button>
           <button
             type="button"
@@ -642,7 +829,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
                 : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
             }`}
           >
-            📅 Bảng Doanh Số Từng Ngày
+            📅 3. Bảng Doanh Số Từng Ngày
           </button>
 
           <button
@@ -725,10 +912,16 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
                       <span className="text-[10px] text-orange-700 font-normal mt-0.5">(Lũy kế NVL từng ngày)</span>
                     </div>
                   </th>
-                  <th className="py-3 px-3 w-44 text-right bg-blue-50/80 text-blue-950 border-l border-blue-200 font-black text-sm" title="Lợi Nhuận Gộp Ước Tính (Tháng) = [Doanh Thu Thuần] - [Tổng Chi Phí Vật Tư Tiêu Hao]">
+                  <th className="py-3 px-3 w-40 text-right bg-rose-50/80 text-rose-950 border-l border-rose-200 font-black text-sm" title="Tổng Chi Phí Khác (Tháng) = Lương nhân viên + Tiền thuê mặt bằng + Điện + Nước + Phát sinh khác (lấy chính xác từ Bảng Chi Phí Khác 12 Tháng)">
                     <div className="flex flex-col items-end">
-                      <span className="text-blue-950 font-black text-xs">Lợi Nhuận Gộp Ước Tính (VNĐ)</span>
-                      <span className="text-[10px] text-blue-700 font-normal mt-0.5">(= DT thuần - Vật tư)</span>
+                      <span className="text-rose-900 font-black text-xs">Chi Phí Khác (VNĐ)</span>
+                      <span className="text-[10px] text-rose-700 font-normal mt-0.5">(Bảng chi phí 12 tháng)</span>
+                    </div>
+                  </th>
+                  <th className="py-3 px-3 w-48 text-right bg-blue-50/80 text-blue-950 border-l border-blue-200 font-black text-sm" title="Lợi Nhuận Trước Thuế Ước Tính (Tháng) = [Doanh Thu Thuần] - [Tổng Chi Phí Vật Tư Tiêu Hao] - [Chi Phí Khác]">
+                    <div className="flex flex-col items-end">
+                      <span className="text-blue-950 font-black text-xs">Lợi Nhuận Trước Thuế Ước Tính (VNĐ)</span>
+                      <span className="text-[10px] text-blue-700 font-normal mt-0.5">(= DT thuần - Vật tư - Chi phí khác)</span>
                     </div>
                   </th>
                   <th className="py-3 px-3 w-28 text-center">Hành Động</th>
@@ -752,6 +945,9 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
                     </td>
                     <td className="py-3 px-3 text-right font-mono font-black text-amber-900 text-sm border-l border-amber-200 bg-amber-100/50">
                       {formatCurrency(totalCustomersInitialRevenue)}
+                    </td>
+                    <td className="py-3 px-3 text-right font-mono text-slate-400 border-l border-amber-200 text-xs">
+                      —
                     </td>
                     <td className="py-3 px-3 text-right font-mono text-slate-400 border-l border-amber-200 text-xs">
                       —
@@ -822,11 +1018,20 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
                         {formatCurrency(m.materialCost)}
                       </td>
 
-                      {/* CỘT BỔ SUNG 2: LỢI NHUẬN GỘP ƯỚC TÍNH (VNĐ) (= [Doanh Thu Thuần] - [Tổng Chi Phí Vật Tư Tiêu Hao]) */}
+                      {/* CỘT BỔ SUNG: CHI PHÍ KHÁC (VNĐ) LẤY CHÍNH XÁC TỪ BẢNG CHI PHÍ KHÁC 12 THÁNG */}
+                      <td className="py-3 px-3 text-right font-mono font-bold text-rose-900 text-sm bg-rose-50/20 border-l border-rose-100" title={`Chi phí khác Tháng ${m.month}: ${formatCurrency(m.otherCost)}`}>
+                        {m.otherCost > 0 ? (
+                          <span className="text-rose-700 font-semibold">{formatCurrency(m.otherCost)}</span>
+                        ) : (
+                          <span className="text-slate-400">0 ₫</span>
+                        )}
+                      </td>
+
+                      {/* CỘT BỔ SUNG 2: LỢI NHUẬN TRƯỚC THUẾ ƯỚC TÍNH (VNĐ) (= [Doanh Thu Thuần] - [Tổng Chi Phí Vật Tư Tiêu Hao] - [Chi Phí Khác]) */}
                       <td className={`py-3 px-3 text-right font-mono font-black text-sm border-l border-blue-100 ${
-                        m.grossProfit >= 0 ? 'bg-blue-50/40 text-blue-900' : 'bg-rose-50/60 text-rose-700'
+                        m.preTaxProfit >= 0 ? 'bg-blue-50/40 text-blue-900' : 'bg-rose-50/60 text-rose-700'
                       }`}>
-                        {formatCurrency(m.grossProfit)}
+                        {formatCurrency(m.preTaxProfit)}
                       </td>
 
                       <td className="py-3 px-3 text-center">
@@ -871,10 +1076,235 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
                   <td className="py-3.5 px-3 text-right font-mono text-orange-300 text-sm font-bold border-l border-slate-800">
                     {formatCurrency(totalYearMaterialCost)}
                   </td>
-                  <td className="py-3.5 px-3 text-right font-mono text-blue-300 text-base font-black border-l border-slate-800 bg-slate-950/60">
-                    {formatCurrency(totalYearGrossProfit)}
+                  <td className="py-3.5 px-3 text-right font-mono text-rose-300 text-sm font-bold border-l border-slate-800 bg-slate-950/20">
+                    {totalYearOtherCost > 0 ? formatCurrency(totalYearOtherCost) : '0 ₫'}
+                  </td>
+                  <td className={`py-3.5 px-3 text-right font-mono text-base font-black border-l border-slate-800 bg-slate-950/60 ${
+                    totalYearPreTaxProfit >= 0 ? 'text-blue-300' : 'text-rose-400'
+                  }`}>
+                    {formatCurrency(totalYearPreTaxProfit)}
                   </td>
                   <td className="py-3.5 px-3 text-center text-slate-400 text-xs font-normal">
+                    12 Tháng
+                  </td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* 2. BẢNG CHI PHÍ KHÁC 12 THÁNG TRONG NĂM (NHẬP THỦ CÔNG) */}
+      {/* ========================================================= */}
+      {(activeSubTab === 'all' || activeSubTab === 'expenses') && (
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden animate-in fade-in duration-200">
+          <div className="p-4 bg-gradient-to-r from-slate-900 via-rose-950/60 to-slate-900 text-white flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              <span className="p-2 bg-rose-500/20 text-rose-400 rounded-xl">
+                <Wallet className="w-5 h-5" />
+              </span>
+              <div>
+                <h3 className="font-extrabold text-sm uppercase tracking-wide text-white flex items-center gap-2 flex-wrap">
+                  <span>2. BẢNG CHI PHÍ KHÁC 12 THÁNG NĂM {selectedYear}</span>
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-500/30 text-rose-200 border border-rose-400/40">
+                    Nhập thủ công
+                  </span>
+                </h3>
+                <p className="text-xs text-slate-300">
+                  Quản lý chi phí vận hành hàng tháng: Lương nhân viên, Tiền thuê mặt bằng, Điện, Nước và Chi phí phát sinh khác
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3">
+              <div className="px-3.5 py-1.5 bg-rose-500/10 border border-rose-400/30 rounded-xl text-xs flex items-center gap-2">
+                <span className="text-slate-300">Tổng chi phí cả năm:</span>
+                <span className="font-mono text-sm font-black text-rose-400">
+                  {formatCurrency(yearTotalAllOtherExpenses)}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div className="p-3 bg-amber-50/70 border-b border-amber-200/80 text-xs text-amber-950 flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-1.5">
+              <Sparkles className="w-4 h-4 text-amber-600 shrink-0" />
+              <span>
+                💡 <strong>Nhập trực tiếp vào các ô bên dưới:</strong> Số tiền tự động cộng tổng cuối hàng và tự động lưu đồng bộ lên hệ thống.
+              </span>
+            </div>
+            {copiedMonth !== null && (
+              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 bg-emerald-100 text-emerald-800 rounded-full font-bold text-[11px] animate-bounce">
+                <Check className="w-3.5 h-3.5 text-emerald-600" />
+                Đã sao chép chi phí Tháng {copiedMonth} sang các tháng còn lại!
+              </span>
+            )}
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs border-collapse">
+              <thead>
+                <tr className="bg-slate-100 text-slate-700 font-extrabold border-b border-slate-200">
+                  <th className="py-3 px-3 w-28">Tháng</th>
+                  <th className="py-3 px-3 w-44 text-right bg-blue-50/40 border-l border-slate-200">
+                    <div className="flex items-center justify-end gap-1.5 text-slate-900 font-bold">
+                      <Users className="w-3.5 h-3.5 text-blue-600" />
+                      <span>Lương Nhân Viên</span>
+                    </div>
+                  </th>
+                  <th className="py-3 px-3 w-44 text-right bg-purple-50/40 border-l border-slate-200">
+                    <div className="flex items-center justify-end gap-1.5 text-slate-900 font-bold">
+                      <Home className="w-3.5 h-3.5 text-purple-600" />
+                      <span>Tiền Thuê Mặt Bằng</span>
+                    </div>
+                  </th>
+                  <th className="py-3 px-3 w-36 text-right bg-amber-50/40 border-l border-slate-200">
+                    <div className="flex items-center justify-end gap-1.5 text-slate-900 font-bold">
+                      <Zap className="w-3.5 h-3.5 text-amber-600" />
+                      <span>Điện</span>
+                    </div>
+                  </th>
+                  <th className="py-3 px-3 w-36 text-right bg-cyan-50/40 border-l border-slate-200">
+                    <div className="flex items-center justify-end gap-1.5 text-slate-900 font-bold">
+                      <Droplets className="w-3.5 h-3.5 text-cyan-600" />
+                      <span>Nước</span>
+                    </div>
+                  </th>
+                  <th className="py-3 px-3 w-44 text-right bg-orange-50/40 border-l border-slate-200">
+                    <div className="flex items-center justify-end gap-1.5 text-slate-900 font-bold">
+                      <Receipt className="w-3.5 h-3.5 text-orange-600" />
+                      <span>Phát Sinh Khác</span>
+                    </div>
+                  </th>
+                  <th className="py-3 px-4 w-48 text-right bg-rose-50 text-rose-950 font-black border-l border-rose-200 text-sm">
+                    <div className="flex flex-col items-end">
+                      <span>TỔNG CHI PHÍ THÁNG</span>
+                      <span className="text-[10px] text-rose-600 font-normal">(= Cộng 5 khoản trên)</span>
+                    </div>
+                  </th>
+                  <th className="py-3 px-2 w-28 text-center border-l border-slate-200">Thao Tác</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {otherExpenses12Months.map(row => {
+                  const isCurrentMonth = row.month === currentRealMonth && selectedYear === currentRealYear;
+                  return (
+                    <tr
+                      key={row.month}
+                      className={`transition ${
+                        isCurrentMonth ? 'bg-amber-50/40 hover:bg-amber-50/70 font-semibold' : 'hover:bg-slate-50/60'
+                      }`}
+                    >
+                      {/* Tháng */}
+                      <td className="py-2.5 px-3">
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-bold text-slate-900 text-xs">{row.monthName}</span>
+                          {isCurrentMonth && (
+                            <span className="px-1.5 py-0.2 rounded-md bg-amber-500 text-slate-950 text-[10px] font-black shrink-0">
+                              Hiện tại
+                            </span>
+                          )}
+                        </div>
+                      </td>
+
+                      {/* Lương nhân viên */}
+                      <td className="py-2 px-2 border-l border-slate-100">
+                        <ExpenseCellInput
+                          value={row.rawSalary}
+                          onChange={(val) => handleUpdateExpenseField(row.month, 'salary', val)}
+                          disabled={isPartnerMode()}
+                          placeholder="0"
+                        />
+                      </td>
+
+                      {/* Tiền thuê mặt bằng */}
+                      <td className="py-2 px-2 border-l border-slate-100">
+                        <ExpenseCellInput
+                          value={row.rawRent}
+                          onChange={(val) => handleUpdateExpenseField(row.month, 'rent', val)}
+                          disabled={isPartnerMode()}
+                          placeholder="0"
+                        />
+                      </td>
+
+                      {/* Điện */}
+                      <td className="py-2 px-2 border-l border-slate-100">
+                        <ExpenseCellInput
+                          value={row.rawElectricity}
+                          onChange={(val) => handleUpdateExpenseField(row.month, 'electricity', val)}
+                          disabled={isPartnerMode()}
+                          placeholder="0"
+                        />
+                      </td>
+
+                      {/* Nước */}
+                      <td className="py-2 px-2 border-l border-slate-100">
+                        <ExpenseCellInput
+                          value={row.rawWater}
+                          onChange={(val) => handleUpdateExpenseField(row.month, 'water', val)}
+                          disabled={isPartnerMode()}
+                          placeholder="0"
+                        />
+                      </td>
+
+                      {/* Phát sinh khác */}
+                      <td className="py-2 px-2 border-l border-slate-100">
+                        <ExpenseCellInput
+                          value={row.rawOther}
+                          onChange={(val) => handleUpdateExpenseField(row.month, 'other', val)}
+                          disabled={isPartnerMode()}
+                          placeholder="0"
+                        />
+                      </td>
+
+                      {/* Tổng chi phí cuối hàng (Lương + Thuê + Điện + Nước + Khác) */}
+                      <td className="py-2.5 px-4 text-right font-mono font-extrabold text-sm border-l border-rose-200 bg-rose-50/60 text-rose-800">
+                        {formatCurrency(row.total)}
+                      </td>
+
+                      {/* Nút sao chép sang các tháng sau */}
+                      <td className="py-2 px-2 text-center border-l border-slate-100">
+                        {!isPartnerMode() && (
+                          <button
+                            type="button"
+                            onClick={() => handleCopyMonthExpensesToFuture(row.month)}
+                            className="px-2 py-1 text-[11px] font-semibold text-slate-500 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition cursor-pointer inline-flex items-center gap-1"
+                            title={`Sao chép các mức chi phí của Tháng ${row.month} sang các tháng còn lại trong năm`}
+                          >
+                            <Copy className="w-3 h-3 text-slate-400" />
+                            <span>Copy cả năm</span>
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+              <tfoot>
+                <tr className="bg-slate-900 text-white font-extrabold text-xs">
+                  <td className="py-3.5 px-3 text-amber-300 uppercase tracking-wide">
+                    TỔNG CỘNG CẢ NĂM {selectedYear}
+                  </td>
+                  <td className="py-3.5 px-3 text-right font-mono text-blue-300 font-bold border-l border-slate-800">
+                    {formatCurrency(yearTotalSalary)}
+                  </td>
+                  <td className="py-3.5 px-3 text-right font-mono text-purple-300 font-bold border-l border-slate-800">
+                    {formatCurrency(yearTotalRent)}
+                  </td>
+                  <td className="py-3.5 px-3 text-right font-mono text-amber-300 font-bold border-l border-slate-800">
+                    {formatCurrency(yearTotalElectricity)}
+                  </td>
+                  <td className="py-3.5 px-3 text-right font-mono text-cyan-300 font-bold border-l border-slate-800">
+                    {formatCurrency(yearTotalWater)}
+                  </td>
+                  <td className="py-3.5 px-3 text-right font-mono text-orange-300 font-bold border-l border-slate-800">
+                    {formatCurrency(yearTotalOtherExpense)}
+                  </td>
+                  <td className="py-3.5 px-4 text-right font-mono text-rose-400 text-sm font-black border-l border-slate-800 bg-rose-950/60">
+                    {formatCurrency(yearTotalAllOtherExpenses)}
+                  </td>
+                  <td className="py-3.5 px-2 text-center text-slate-400 text-[11px] font-normal border-l border-slate-800">
                     12 Tháng
                   </td>
                 </tr>

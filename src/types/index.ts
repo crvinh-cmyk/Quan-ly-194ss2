@@ -68,6 +68,17 @@ export interface ArchivedDeletedCustomerRevenue {
   }>;
 }
 
+export interface MonthOtherExpenses {
+  salary: number;      // Lương nhân viên
+  rent: number;        // Tiền Thuê Mặt Bằng
+  electricity: number; // Điện
+  water: number;       // Nước
+  other: number;       // Phát sinh khác
+  note?: string;
+}
+
+export type OtherExpensesMap = Record<string, MonthOtherExpenses>; // key: `${year}-${month}` (VD: '2026-1')
+
 export interface OrderItem {
   id: string;
   date: string; // YYYY-MM-DD

@@ -10,7 +10,7 @@ import {
   runTransaction
 } from 'firebase/firestore';
 import { db } from '../firebase/config';
-import { Product, Customer, Order, Material, StockImportReceipt, StockImportItem, WorkshopInfo, StudioCombo, ProductCostItem, ProductCostMap, InkImportRecord, InkColorCode, S1aDayOverride, S1aManualEntry, BoardCorePriceRow, BoardCorePriceMap, AccessoryMaterialItem, AccessoryMaterialMap, PaperMaterialItem, PaperMaterialMap, ArchivedDeletedCustomerRevenue } from '../types';
+import { Product, Customer, Order, Material, StockImportReceipt, StockImportItem, WorkshopInfo, StudioCombo, ProductCostItem, ProductCostMap, InkImportRecord, InkColorCode, S1aDayOverride, S1aManualEntry, BoardCorePriceRow, BoardCorePriceMap, AccessoryMaterialItem, AccessoryMaterialMap, PaperMaterialItem, PaperMaterialMap, ArchivedDeletedCustomerRevenue, MonthOtherExpenses, OtherExpensesMap } from '../types';
 import { DEFAULT_WORKSHOP_INFO, DEFAULT_INK_IMPORTS } from '../data/initialData';
 
 // User info interface for tagging created/updated records
@@ -1968,4 +1968,78 @@ export async function saveArchivedCustomerRevenuesToFirestore(
     console.error('Error saving archived deleted customers to Firestore:', e);
   }
 }
+
+// =================================================================
+// 11. OTHER EXPENSES (CHI PHÍ KHÁC: LƯƠNG, MẶT BẰNG, ĐIỆN, NƯỚC, PHÁT SINH)
+// =================================================================
+const STORAGE_KEY_OTHER_EXPENSES = 'xuongin194_other_expenses_v1';
+
+export function getLocalOtherExpenses(): OtherExpensesMap {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_OTHER_EXPENSES);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+export function saveLocalOtherExpenses(data: OtherExpensesMap): void {
+  try {
+    localStorage.setItem(STORAGE_KEY_OTHER_EXPENSES, JSON.stringify(data));
+  } catch (e) {
+    console.error('Error saving local other expenses:', e);
+  }
+}
+
+export function subscribeOtherExpenses(
+  onData: (expenses: OtherExpensesMap) => void,
+  onError?: (err: Error) => void
+) {
+  const docRef = doc(db, COLLECTIONS.SETTINGS, 'other_expenses');
+  return onSnapshot(docRef, (snapshot) => {
+    if (snapshot.exists()) {
+      const raw = snapshot.data();
+      const cleanData: OtherExpensesMap = {};
+      Object.entries(raw).forEach(([k, v]) => {
+        if (k !== 'updatedAt' && k !== 'userId' && k !== 'createdBy' && typeof v === 'object' && v !== null) {
+          const item = v as any;
+          cleanData[k] = {
+            salary: Number(item.salary) || 0,
+            rent: Number(item.rent) || 0,
+            electricity: Number(item.electricity) || 0,
+            water: Number(item.water) || 0,
+            other: Number(item.other) || 0,
+            note: item.note || undefined
+          };
+        }
+      });
+      saveLocalOtherExpenses(cleanData);
+      onData(cleanData);
+    } else {
+      onData(getLocalOtherExpenses());
+    }
+  }, (err) => {
+    console.error('Firestore subscribeOtherExpenses error:', err);
+    onData(getLocalOtherExpenses());
+    if (onError) onError(err);
+  });
+}
+
+export async function saveOtherExpensesToFirestore(
+  data: OtherExpensesMap,
+  user?: AuthUserContext | null
+): Promise<void> {
+  saveLocalOtherExpenses(data);
+  try {
+    const docRef = doc(db, COLLECTIONS.SETTINGS, 'other_expenses');
+    const enriched = attachUserInfo({
+      ...data,
+      updatedAt: new Date().toISOString()
+    }, user);
+    await setDoc(docRef, cleanFirestoreObject(enriched), { merge: true });
+  } catch (e) {
+    console.error('Error saving other expenses to Firestore:', e);
+  }
+}
+
 
