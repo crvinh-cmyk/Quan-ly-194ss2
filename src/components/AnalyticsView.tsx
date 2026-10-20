@@ -90,7 +90,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
   const [selectedYear, setSelectedYear] = useState<number>(currentRealYear);
   const [selectedMonth, setSelectedMonth] = useState<number | 'all'>('all'); // 1-12 or 'all'
   const [dailyMonth, setDailyMonth] = useState<number>(currentRealMonth);
-  const [activeSubTab, setActiveSubTab] = useState<'all' | 'monthly' | 'expenses' | 'daily'>('all');
+  const [activeSubTab, setActiveSubTab] = useState<'all' | 'monthly' | 'expenses' | 'daily' | 'yoy'>('all');
   const [activeMainSection, setActiveMainSection] = useState<'sales' | 'product_cost'>('sales');
 
   // Khấu trừ doanh thu thủ công theo từng tháng / năm
@@ -569,6 +569,141 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
     };
   }, [orders, selectedYear, dailyMonth, currentRealDayStr, productCostLookup, products]);
 
+  // ==========================================
+  // SO SÁNH & TĂNG TRƯỜNG CÙNG KỲ (YoY) NĂM CHỌN VS NĂM TRƯỚC
+  // ==========================================
+  const prevYear = selectedYear - 1;
+
+  const formatGrowthPct = (current: number, previous: number, isDark = false) => {
+    if (!previous || previous === 0) {
+      return { text: '—', colorClass: isDark ? 'text-slate-400 font-medium' : 'text-slate-400 font-medium' };
+    }
+    const pct = ((current - previous) / Math.abs(previous)) * 100;
+    if (Math.abs(pct) < 0.05) {
+      return { text: '0.0%', colorClass: isDark ? 'text-slate-300 font-bold' : 'text-slate-500 font-bold' };
+    }
+    if (pct > 0) {
+      return { text: `+${pct.toFixed(1)}%`, colorClass: isDark ? 'text-emerald-400 font-black' : 'text-emerald-600 font-extrabold' };
+    }
+    return { text: `${pct.toFixed(1)}%`, colorClass: isDark ? 'text-rose-400 font-black' : 'text-rose-600 font-extrabold' };
+  };
+
+  const yoyComparisonData = useMemo(() => {
+    const prevMonths = Array.from({ length: 12 }, (_, i) => {
+      const mNum = i + 1;
+      const deductionKey = `${prevYear}-${mNum}`;
+      const deduction = revenueDeductions[deductionKey] || 0;
+
+      const rawExp = otherExpenses[deductionKey] || { salary: 0, rent: 0, electricity: 0, water: 0, other: 0 };
+      const expSalary = rawExp.salary || 0;
+      const expRent = rawExp.rent || 0;
+      const expElectricity = rawExp.electricity || 0;
+      const expWater = rawExp.water || 0;
+      const expOther = rawExp.other || 0;
+      const otherCost = expSalary + expRent + expElectricity + expWater + expOther;
+
+      return {
+        month: mNum,
+        revenue: 0,
+        deduction,
+        netRevenue: 0,
+        materialCost: 0,
+        otherCost,
+        preTaxProfit: 0
+      };
+    });
+
+    orders.forEach(o => {
+      if (o.status === 'cancelled') return;
+      const sub = o.subtotal || 0;
+      const disc = o.discount || 0;
+      const ratio = sub > 0 ? Math.max(0, sub - disc) / sub : 1;
+      const items = o.items && o.items.length > 0 ? o.items : [];
+
+      if (items.length === 0) {
+        const d = new Date(o.date);
+        if (d.getFullYear() === prevYear) {
+          const mIdx = d.getMonth();
+          if (mIdx >= 0 && mIdx < 12) {
+            prevMonths[mIdx].revenue += Math.max(0, sub - disc);
+          }
+        }
+      } else {
+        items.forEach(it => {
+          const itDate = it.date || o.date;
+          if (!itDate) return;
+          const d = new Date(itDate);
+          if (d.getFullYear() === prevYear) {
+            const mIdx = d.getMonth();
+            if (mIdx >= 0 && mIdx < 12) {
+              const itAmt = (it.amount !== undefined ? it.amount : (it.quantity * (it.price || 0))) || 0;
+              prevMonths[mIdx].revenue += Math.round(itAmt * ratio);
+              prevMonths[mIdx].materialCost += getItemMaterialCost(it);
+            }
+          }
+        });
+      }
+    });
+
+    prevMonths.forEach(m => {
+      m.netRevenue = Math.max(0, m.revenue - m.deduction);
+      m.preTaxProfit = m.netRevenue - m.materialCost - m.otherCost;
+    });
+
+    const rows = monthlyData.map((currM, idx) => {
+      const prevM = prevMonths[idx];
+
+      const currNetRev = currM.netRevenue;
+      const prevNetRev = prevM.netRevenue;
+
+      const currTotalCost = currM.materialCost + currM.otherCost;
+      const prevTotalCost = prevM.materialCost + prevM.otherCost;
+
+      const currProfit = currM.preTaxProfit;
+      const prevProfit = prevM.preTaxProfit;
+
+      return {
+        month: currM.month,
+        currNetRev,
+        prevNetRev,
+        revGrowth: formatGrowthPct(currNetRev, prevNetRev, false),
+
+        currTotalCost,
+        prevTotalCost,
+        costGrowth: formatGrowthPct(currTotalCost, prevTotalCost, false),
+
+        currProfit,
+        prevProfit,
+        profitGrowth: formatGrowthPct(currProfit, prevProfit, false)
+      };
+    });
+
+    const totalCurrNetRev = rows.reduce((s, r) => s + r.currNetRev, 0);
+    const totalPrevNetRev = rows.reduce((s, r) => s + r.prevNetRev, 0);
+
+    const totalCurrCost = rows.reduce((s, r) => s + r.currTotalCost, 0);
+    const totalPrevCost = rows.reduce((s, r) => s + r.prevTotalCost, 0);
+
+    const totalCurrProfit = rows.reduce((s, r) => s + r.currProfit, 0);
+    const totalPrevProfit = rows.reduce((s, r) => s + r.prevProfit, 0);
+
+    const yearTotals = {
+      currNetRev: totalCurrNetRev,
+      prevNetRev: totalPrevNetRev,
+      revGrowth: formatGrowthPct(totalCurrNetRev, totalPrevNetRev, true),
+
+      currTotalCost: totalCurrCost,
+      prevTotalCost: totalPrevCost,
+      costGrowth: formatGrowthPct(totalCurrCost, totalPrevCost, true),
+
+      currProfit: totalCurrProfit,
+      prevProfit: totalPrevProfit,
+      profitGrowth: formatGrowthPct(totalCurrProfit, totalPrevProfit, true)
+    };
+
+    return { rows, yearTotals };
+  }, [monthlyData, selectedYear, prevYear, revenueDeductions, otherExpenses, orders, productCostLookup, products]);
+
   const handleConfirmReset = () => {
     if (onResetYearData) {
       onResetYearData(selectedYear, resetOption);
@@ -829,6 +964,18 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
             }`}
           >
             📅 3. Bảng Doanh Số Từng Ngày
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveSubTab('yoy')}
+            className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer flex items-center gap-1.5 ${
+              activeSubTab === 'yoy'
+                ? 'bg-indigo-600 text-white shadow-xs font-black'
+                : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+            }`}
+          >
+            <TrendingUp className="w-3.5 h-3.5" />
+            <span>4. So Sánh & Tăng Trưởng Cùng Kỳ (YoY)</span>
           </button>
 
           <button
@@ -1608,6 +1755,267 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
                   </td>
                   <td className="py-3.5 px-4 text-right font-mono text-blue-300 text-base font-black border-l border-slate-800 bg-slate-950/60">
                     {formatCurrency(dailyBreakdown.totalMonthGrossProfit)}
+                  </td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* 4. BẢNG SO SÁNH & TĂNG TRƯỜNG CÙNG KỲ (YoY) */}
+      {/* ========================================================= */}
+      {(activeSubTab === 'all' || activeSubTab === 'yoy') && (
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
+          {/* Card Header */}
+          <div className="p-4 bg-gradient-to-r from-indigo-950 via-slate-900 to-indigo-900 text-white flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              <span className="p-2 bg-indigo-500/20 text-indigo-300 rounded-xl border border-indigo-500/30">
+                <TrendingUp className="w-5 h-5" />
+              </span>
+              <div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h3 className="font-extrabold text-sm uppercase tracking-wide text-white">
+                    4. BẢNG SO SÁNH & TĂNG TRƯỜNG CÙNG KỲ (YoY)
+                  </h3>
+                  <span className="px-2.5 py-0.5 rounded-full text-xs font-black bg-indigo-500 text-white shadow-xs">
+                    NĂM {selectedYear} VS {prevYear}
+                  </span>
+                </div>
+                <p className="text-xs text-indigo-200/90 mt-0.5">
+                  Đối chiếu Doanh thu thuần, Tổng chi phí và Lợi nhuận từng tháng giữa Năm {selectedYear} và Năm liền trước ({prevYear})
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-mono font-bold bg-indigo-900/80 px-3 py-1.5 rounded-xl border border-indigo-700/60 text-indigo-200">
+                Kỳ đối chiếu: 12 Tháng
+              </span>
+            </div>
+          </div>
+
+          {/* Quick Summary Cards Banner */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-4 bg-slate-50 border-b border-slate-200">
+            {/* Revenue YoY Card */}
+            <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-2xs space-y-1">
+              <div className="flex items-center justify-between text-xs text-slate-500 font-bold">
+                <span>Doanh Thu Thuần Cả Năm</span>
+                <span className={yoyComparisonData.yearTotals.revGrowth.colorClass}>
+                  {yoyComparisonData.yearTotals.revGrowth.text}
+                </span>
+              </div>
+              <div className="flex items-baseline justify-between">
+                <span className="font-mono text-base sm:text-lg font-black text-slate-900">
+                  {formatCurrency(yoyComparisonData.yearTotals.currNetRev)}
+                </span>
+                <span className="font-mono text-xs text-slate-400 font-semibold">
+                  vs {formatCurrency(yoyComparisonData.yearTotals.prevNetRev)} ({prevYear})
+                </span>
+              </div>
+            </div>
+
+            {/* Expenses YoY Card */}
+            <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-2xs space-y-1">
+              <div className="flex items-center justify-between text-xs text-slate-500 font-bold">
+                <span>Tổng Chi Phí (Vật tư + Khác)</span>
+                <span className={yoyComparisonData.yearTotals.costGrowth.colorClass}>
+                  {yoyComparisonData.yearTotals.costGrowth.text}
+                </span>
+              </div>
+              <div className="flex items-baseline justify-between">
+                <span className="font-mono text-base sm:text-lg font-black text-slate-900">
+                  {formatCurrency(yoyComparisonData.yearTotals.currTotalCost)}
+                </span>
+                <span className="font-mono text-xs text-slate-400 font-semibold">
+                  vs {formatCurrency(yoyComparisonData.yearTotals.prevTotalCost)} ({prevYear})
+                </span>
+              </div>
+            </div>
+
+            {/* Profit YoY Card */}
+            <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-2xs space-y-1">
+              <div className="flex items-center justify-between text-xs text-slate-500 font-bold">
+                <span>Lợi Nhuận Trước Thuế</span>
+                <span className={yoyComparisonData.yearTotals.profitGrowth.colorClass}>
+                  {yoyComparisonData.yearTotals.profitGrowth.text}
+                </span>
+              </div>
+              <div className="flex items-baseline justify-between">
+                <span className="font-mono text-base sm:text-lg font-black text-slate-900">
+                  {formatCurrency(yoyComparisonData.yearTotals.currProfit)}
+                </span>
+                <span className="font-mono text-xs text-slate-400 font-semibold">
+                  vs {formatCurrency(yoyComparisonData.yearTotals.prevProfit)} ({prevYear})
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Table Container */}
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs border-collapse">
+              <thead>
+                {/* Header Row 1: Main Metric Groups */}
+                <tr className="bg-slate-900 text-white font-extrabold text-xs">
+                  <th rowSpan={2} className="py-3 px-3.5 w-28 border-r border-slate-800 text-center align-middle">
+                    Tháng
+                  </th>
+                  <th colSpan={3} className="py-2.5 px-3 text-center bg-emerald-950/80 text-emerald-300 border-r border-slate-800">
+                    DOANH THU THUẦN (VNĐ)
+                  </th>
+                  <th colSpan={3} className="py-2.5 px-3 text-center bg-rose-950/80 text-rose-300 border-r border-slate-800">
+                    TỔNG CHI PHÍ (Vật Tư + Khác)
+                  </th>
+                  <th colSpan={3} className="py-2.5 px-3 text-center bg-blue-950/80 text-blue-300">
+                    LỢI NHUẬN TRƯỚC THUẾ (VNĐ)
+                  </th>
+                </tr>
+
+                {/* Header Row 2: Sub-columns for Years & Growth % */}
+                <tr className="bg-slate-100 text-slate-700 font-extrabold border-b border-slate-300 text-[11px]">
+                  {/* Revenue Columns */}
+                  <th className="py-2 px-3 text-right bg-emerald-50/90 text-emerald-950 w-32 border-l border-slate-200">
+                    Năm {selectedYear}
+                  </th>
+                  <th className="py-2 px-3 text-right bg-emerald-50/50 text-slate-600 w-32">
+                    Năm {prevYear}
+                  </th>
+                  <th className="py-2 px-3 text-center bg-emerald-100/70 text-emerald-950 w-28 border-r border-slate-300 font-black">
+                    % Tăng Trưởng
+                  </th>
+
+                  {/* Expenses Columns */}
+                  <th className="py-2 px-3 text-right bg-rose-50/90 text-rose-950 w-32">
+                    Năm {selectedYear}
+                  </th>
+                  <th className="py-2 px-3 text-right bg-rose-50/50 text-slate-600 w-32">
+                    Năm {prevYear}
+                  </th>
+                  <th className="py-2 px-3 text-center bg-rose-100/70 text-rose-950 w-28 border-r border-slate-300 font-black">
+                    % Tăng/Giảm
+                  </th>
+
+                  {/* Profit Columns */}
+                  <th className="py-2 px-3 text-right bg-blue-50/90 text-blue-950 w-32">
+                    Năm {selectedYear}
+                  </th>
+                  <th className="py-2 px-3 text-right bg-blue-50/50 text-slate-600 w-32">
+                    Năm {prevYear}
+                  </th>
+                  <th className="py-2 px-3 text-center bg-blue-100/70 text-blue-950 w-28 font-black">
+                    % Tăng Trưởng
+                  </th>
+                </tr>
+              </thead>
+
+              <tbody className="divide-y divide-slate-200">
+                {yoyComparisonData.rows.map((r) => (
+                  <tr key={r.month} className="hover:bg-indigo-50/30 transition">
+                    {/* Tháng */}
+                    <td className="py-2.5 px-3.5 font-bold text-slate-900 border-r border-slate-200 text-center">
+                      Tháng {r.month}
+                    </td>
+
+                    {/* Revenue selectedYear */}
+                    <td className="py-2.5 px-3 text-right font-mono font-bold text-emerald-950 bg-emerald-50/30">
+                      {formatCurrency(r.currNetRev)}
+                    </td>
+                    {/* Revenue prevYear */}
+                    <td className="py-2.5 px-3 text-right font-mono text-slate-500">
+                      {formatCurrency(r.prevNetRev)}
+                    </td>
+                    {/* Revenue Growth % */}
+                    <td className="py-2.5 px-3 text-center font-mono border-r border-slate-200 bg-emerald-50/50">
+                      <span className={r.revGrowth.colorClass}>
+                        {r.revGrowth.text}
+                      </span>
+                    </td>
+
+                    {/* Expenses selectedYear */}
+                    <td className="py-2.5 px-3 text-right font-mono font-bold text-rose-950 bg-rose-50/30">
+                      {formatCurrency(r.currTotalCost)}
+                    </td>
+                    {/* Expenses prevYear */}
+                    <td className="py-2.5 px-3 text-right font-mono text-slate-500">
+                      {formatCurrency(r.prevTotalCost)}
+                    </td>
+                    {/* Expenses Growth % */}
+                    <td className="py-2.5 px-3 text-center font-mono border-r border-slate-200 bg-rose-50/50">
+                      <span className={r.costGrowth.colorClass}>
+                        {r.costGrowth.text}
+                      </span>
+                    </td>
+
+                    {/* Profit selectedYear */}
+                    <td className="py-2.5 px-3 text-right font-mono font-bold text-blue-950 bg-blue-50/30">
+                      {formatCurrency(r.currProfit)}
+                    </td>
+                    {/* Profit prevYear */}
+                    <td className="py-2.5 px-3 text-right font-mono text-slate-500">
+                      {formatCurrency(r.prevProfit)}
+                    </td>
+                    {/* Profit Growth % */}
+                    <td className="py-2.5 px-3 text-center font-mono bg-blue-50/50">
+                      <span className={r.profitGrowth.colorClass}>
+                        {r.profitGrowth.text}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+
+              {/* Dòng TỔNG CẢ NĂM */}
+              <tfoot>
+                <tr className="bg-slate-900 text-white font-black text-xs border-t-2 border-slate-900">
+                  <td className="py-3 px-3.5 border-r border-slate-800 text-center uppercase">
+                    Tổng Cả Năm
+                  </td>
+
+                  {/* Total Revenue selectedYear */}
+                  <td className="py-3 px-3 text-right font-mono text-amber-300 text-sm bg-emerald-950/60">
+                    {formatCurrency(yoyComparisonData.yearTotals.currNetRev)}
+                  </td>
+                  {/* Total Revenue prevYear */}
+                  <td className="py-3 px-3 text-right font-mono text-slate-300 text-sm">
+                    {formatCurrency(yoyComparisonData.yearTotals.prevNetRev)}
+                  </td>
+                  {/* Total Revenue Growth % */}
+                  <td className="py-3 px-3 text-center font-mono border-r border-slate-800 bg-emerald-950/80">
+                    <span className={yoyComparisonData.yearTotals.revGrowth.colorClass}>
+                      {yoyComparisonData.yearTotals.revGrowth.text}
+                    </span>
+                  </td>
+
+                  {/* Total Expenses selectedYear */}
+                  <td className="py-3 px-3 text-right font-mono text-rose-300 text-sm bg-rose-950/60">
+                    {formatCurrency(yoyComparisonData.yearTotals.currTotalCost)}
+                  </td>
+                  {/* Total Expenses prevYear */}
+                  <td className="py-3 px-3 text-right font-mono text-slate-300 text-sm">
+                    {formatCurrency(yoyComparisonData.yearTotals.prevTotalCost)}
+                  </td>
+                  {/* Total Expenses Growth % */}
+                  <td className="py-3 px-3 text-center font-mono border-r border-slate-800 bg-rose-950/80">
+                    <span className={yoyComparisonData.yearTotals.costGrowth.colorClass}>
+                      {yoyComparisonData.yearTotals.costGrowth.text}
+                    </span>
+                  </td>
+
+                  {/* Total Profit selectedYear */}
+                  <td className="py-3 px-3 text-right font-mono text-cyan-300 text-sm bg-blue-950/60">
+                    {formatCurrency(yoyComparisonData.yearTotals.currProfit)}
+                  </td>
+                  {/* Total Profit prevYear */}
+                  <td className="py-3 px-3 text-right font-mono text-slate-300 text-sm">
+                    {formatCurrency(yoyComparisonData.yearTotals.prevProfit)}
+                  </td>
+                  {/* Total Profit Growth % */}
+                  <td className="py-3 px-3 text-center font-mono bg-blue-950/80">
+                    <span className={yoyComparisonData.yearTotals.profitGrowth.colorClass}>
+                      {yoyComparisonData.yearTotals.profitGrowth.text}
+                    </span>
                   </td>
                 </tr>
               </tfoot>
