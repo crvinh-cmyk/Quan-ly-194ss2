@@ -284,16 +284,15 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
     const months = Array.from({ length: 12 }, (_, i) => {
       const mNum = i + 1;
       const deductionKey = `${selectedYear}-${mNum}`;
-      const rawDeduction = revenueDeductions[deductionKey] || 0;
-      const deduction = isPartnerMode() ? getDisplayPrice(rawDeduction) : rawDeduction;
+      const deduction = revenueDeductions[deductionKey] || 0;
 
       // Chi phí khác của từng tháng lấy chính xác từ otherExpenses
       const rawExp = otherExpenses[deductionKey] || { salary: 0, rent: 0, electricity: 0, water: 0, other: 0 };
-      const expSalary = isPartnerMode() ? getDisplayPrice(rawExp.salary || 0) : (rawExp.salary || 0);
-      const expRent = isPartnerMode() ? getDisplayPrice(rawExp.rent || 0) : (rawExp.rent || 0);
-      const expElectricity = isPartnerMode() ? getDisplayPrice(rawExp.electricity || 0) : (rawExp.electricity || 0);
-      const expWater = isPartnerMode() ? getDisplayPrice(rawExp.water || 0) : (rawExp.water || 0);
-      const expOther = isPartnerMode() ? getDisplayPrice(rawExp.other || 0) : (rawExp.other || 0);
+      const expSalary = rawExp.salary || 0;
+      const expRent = rawExp.rent || 0;
+      const expElectricity = rawExp.electricity || 0;
+      const expWater = rawExp.water || 0;
+      const expOther = rawExp.other || 0;
       const otherCost = expSalary + expRent + expElectricity + expWater + expOther;
 
       return {
@@ -435,11 +434,11 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
       const m = i + 1;
       const key = `${selectedYear}-${m}`;
       const raw = otherExpenses[key] || { salary: 0, rent: 0, electricity: 0, water: 0, other: 0 };
-      const salary = isPartnerMode() ? getDisplayPrice(raw.salary || 0) : (raw.salary || 0);
-      const rent = isPartnerMode() ? getDisplayPrice(raw.rent || 0) : (raw.rent || 0);
-      const electricity = isPartnerMode() ? getDisplayPrice(raw.electricity || 0) : (raw.electricity || 0);
-      const water = isPartnerMode() ? getDisplayPrice(raw.water || 0) : (raw.water || 0);
-      const other = isPartnerMode() ? getDisplayPrice(raw.other || 0) : (raw.other || 0);
+      const salary = raw.salary || 0;
+      const rent = raw.rent || 0;
+      const electricity = raw.electricity || 0;
+      const water = raw.water || 0;
+      const other = raw.other || 0;
       const total = salary + rent + electricity + water + other;
 
       return {

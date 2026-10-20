@@ -620,49 +620,21 @@ export default function App() {
     const lockedIds = new Set(customers.filter(c => c.isLocked).map(c => c.id));
     const lockedNames = new Set(customers.filter(c => c.isLocked).map(c => (c.name || '').trim().toLowerCase()));
 
-    const nonLockedOrders = orders.filter(o => {
+    return orders.filter(o => {
       if (o.customerId && lockedIds.has(o.customerId)) return false;
       if (o.customerName && lockedNames.has(o.customerName.trim().toLowerCase())) return false;
       return true;
     });
-
-    return nonLockedOrders.map(transformOrderForPartner);
   }, [orders, customers]);
 
-  const partnerProducts = useMemo(() => {
-    if (!isPartnerMode()) return products;
-    return products.map(p => ({
-      ...p,
-      price: getDisplayPrice(p.price)
-    }));
-  }, [products]);
+  const partnerProducts = products;
 
-  const partnerCombos = useMemo(() => {
-    if (!isPartnerMode()) return combos;
-    return combos.map(c => ({
-      ...c,
-      items: Array.isArray(c.items)
-        ? c.items.map(ci => ({
-            ...ci,
-            defaultPrice: ci.defaultPrice !== undefined ? getDisplayPrice(ci.defaultPrice) : undefined
-          }))
-        : c.items
-    }));
-  }, [combos]);
+  const partnerCombos = combos;
 
   const partnerCustomers = useMemo(() => {
     if (!isPartnerMode()) return customers;
-    // Lọc bỏ tất cả khách hàng trong danh sách "Đã khóa" ở bản chính
-    return customers.filter(c => !c.isLocked).map(c => ({
-      ...c,
-      initialDebt: c.initialDebt || 0,
-      initialYearlyRevenue: getDisplayPrice(c.initialYearlyRevenue || 0),
-      initialYearlyRevenues: c.initialYearlyRevenues
-        ? Object.fromEntries(
-            Object.entries(c.initialYearlyRevenues).map(([k, v]) => [k, getDisplayPrice(v)])
-          )
-        : undefined
-    }));
+    // Lọc bỏ tất cả khách hàng trong danh sách "Đã khóa" ở bản chính (giữ nguyên vẹn 100% công nợ và doanh thu ban đầu)
+    return customers.filter(c => !c.isLocked);
   }, [customers]);
 
   const partnerArchivedRevenues = useMemo(() => {

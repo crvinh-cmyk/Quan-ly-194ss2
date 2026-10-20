@@ -77,56 +77,19 @@ export function isPartnerMode(): boolean {
 
 /**
  * Lấy hệ số nhân doanh thu:
- * - Nếu ở trang gốc (không phải đối tác): Trả về 1.0 (nguyên vẹn 100% giá và doanh thu).
- * - Nếu ở bản đối tác: Đọc `VITE_REVENUE_MULTIPLIER` (hoặc `NEXT_PUBLIC_REVENUE_MARKUP`), mặc định là 0.8 (giảm 20%).
+ * - Luôn trả về 1.0 (nguyên vẹn 100% giá, chi phí và doanh thu thực tế cho bản phụ/đối tác).
  */
 export function getRevenueMultiplier(): number {
-  if (!isPartnerMode()) {
-    return 1.0; // Dự án gốc: 100% nguyên vẹn
-  }
-
-  let envMarkup: any = undefined;
-  try {
-    envMarkup =
-      import.meta.env?.VITE_REVENUE_MULTIPLIER ||
-      import.meta.env?.VITE_REVENUE_MARKUP ||
-      (import.meta.env as any)?.NEXT_PUBLIC_REVENUE_MULTIPLIER ||
-      (import.meta.env as any)?.NEXT_PUBLIC_REVENUE_MARKUP;
-  } catch {
-    // ignore
-  }
-
-  try {
-    if (!envMarkup && typeof process !== 'undefined' && process?.env) {
-      envMarkup =
-        process.env.VITE_REVENUE_MULTIPLIER ||
-        process.env.VITE_REVENUE_MARKUP ||
-        process.env.NEXT_PUBLIC_REVENUE_MULTIPLIER ||
-        process.env.NEXT_PUBLIC_REVENUE_MARKUP;
-    }
-  } catch {
-    // ignore
-  }
-
-  if (envMarkup !== undefined && envMarkup !== null && envMarkup !== '') {
-    const parsed = parseFloat(String(envMarkup));
-    if (!isNaN(parsed) && parsed > 0 && parsed <= 5) {
-      return parsed;
-    }
-  }
-
-  // Mặc định 1.0 (nguyên vẹn 100% doanh thu và giá gốc cho bản đối tác, đã hủy bỏ giảm 20%)
   return 1.0;
 }
 
 /**
  * Hàm helper tính toán giá tiền hiển thị:
- * getDisplayPrice(amount) = amount * MULTIPLIER (mặc định 1.0)
+ * getDisplayPrice(amount) = amount (nguyên vẹn 100%)
  */
 export function getDisplayPrice(amount: number): number {
   if (!amount || amount <= 0 || isNaN(amount)) return 0;
-  const mult = getRevenueMultiplier();
-  return Math.round(amount * mult);
+  return Math.round(amount);
 }
 
 /**
@@ -136,28 +99,8 @@ export const applyPartnerDiscount = getDisplayPrice;
 
 /**
  * Chuyển đổi dữ liệu đơn hàng cho bản xem của đối tác:
- * - subtotal, discount, paid, totalDue được nhân với MULTIPLIER (1.0)
- * - Từng item trong đơn hàng đơn giá và thành tiền cũng được nhân với MULTIPLIER (1.0)
+ * Trả về đơn hàng nguyên vẹn 100% không qua chiết khấu hay điều chỉnh giá.
  */
 export function transformOrderForPartner(order: any): any {
-  if (!isPartnerMode() || !order) {
-    return order;
-  }
-
-  const mult = getRevenueMultiplier();
-  return {
-    ...order,
-    subtotal: Math.round((order.subtotal || 0) * mult),
-    discount: Math.round((order.discount || 0) * mult),
-    paid: Math.round((order.paid || 0) * mult),
-    totalDue: Math.round((order.totalDue || 0) * mult),
-    previousDebt: order.previousDebt || 0,
-    items: Array.isArray(order.items)
-      ? order.items.map((item: any) => ({
-          ...item,
-          price: Math.round((item.price || 0) * mult),
-          amount: Math.round((item.amount || 0) * mult)
-        }))
-      : order.items
-  };
+  return order;
 }
