@@ -108,7 +108,7 @@ export default function App() {
 
   // Function to switch tab and persist UI tab preference
   const handleSelectTab = (tab: ActiveTab) => {
-    if (isPartnerMode() && (tab === 'orders' || tab === 'customers')) {
+    if (isPartnerMode() && (tab === 'orders' || tab === 'inventory')) {
       setActiveTab('pos');
       return;
     }
@@ -612,12 +612,22 @@ export default function App() {
     saveWorkshopInfoToFirestore(info, userContext).catch(console.error);
   };
 
-  // 1. Loading splash screen while verifying persistent session
-  // Dữ liệu áp dụng chiết khấu đối tác khi ở chế độ Partner View (nhân 0.8 / giảm 20% doanh thu)
+  // Dữ liệu áp dụng cho bản xem của đối tác (loại trừ tất cả doanh thu & khách hàng thuộc danh sách ĐÃ KHÓA ở bản chính)
   const partnerOrders = useMemo(() => {
     if (!isPartnerMode()) return orders;
-    return orders.map(transformOrderForPartner);
-  }, [orders]);
+
+    // Lọc bỏ tất cả đơn hàng thuộc về danh sách khách hàng "Đã khóa" ở bản chính
+    const lockedIds = new Set(customers.filter(c => c.isLocked).map(c => c.id));
+    const lockedNames = new Set(customers.filter(c => c.isLocked).map(c => (c.name || '').trim().toLowerCase()));
+
+    const nonLockedOrders = orders.filter(o => {
+      if (o.customerId && lockedIds.has(o.customerId)) return false;
+      if (o.customerName && lockedNames.has(o.customerName.trim().toLowerCase())) return false;
+      return true;
+    });
+
+    return nonLockedOrders.map(transformOrderForPartner);
+  }, [orders, customers]);
 
   const partnerProducts = useMemo(() => {
     if (!isPartnerMode()) return products;
@@ -642,9 +652,10 @@ export default function App() {
 
   const partnerCustomers = useMemo(() => {
     if (!isPartnerMode()) return customers;
-    return customers.map(c => ({
+    // Lọc bỏ tất cả khách hàng trong danh sách "Đã khóa" ở bản chính
+    return customers.filter(c => !c.isLocked).map(c => ({
       ...c,
-      initialDebt: 0,
+      initialDebt: c.initialDebt || 0,
       initialYearlyRevenue: getDisplayPrice(c.initialYearlyRevenue || 0),
       initialYearlyRevenues: c.initialYearlyRevenues
         ? Object.fromEntries(
@@ -653,6 +664,17 @@ export default function App() {
         : undefined
     }));
   }, [customers]);
+
+  const partnerArchivedRevenues = useMemo(() => {
+    if (!isPartnerMode()) return archivedDeletedCustomerRevenues;
+    const lockedIds = new Set(customers.filter(c => c.isLocked).map(c => c.id));
+    const lockedNames = new Set(customers.filter(c => c.isLocked).map(c => (c.name || '').trim().toLowerCase()));
+    return archivedDeletedCustomerRevenues.filter(r => {
+      if (r.customerId && lockedIds.has(r.customerId)) return false;
+      if (r.customerName && lockedNames.has(r.customerName.trim().toLowerCase())) return false;
+      return true;
+    });
+  }, [archivedDeletedCustomerRevenues, customers]);
 
   if (authLoading) {
     return (
@@ -738,19 +760,21 @@ export default function App() {
               Đơn ({orders.length})
             </button>
           )}
-          <button
-            onClick={() => handleSelectTab('inventory')}
-            className={`px-3 py-1.5 rounded-lg text-xs font-bold shrink-0 flex items-center gap-1 ${
-              activeTab === 'inventory' ? 'bg-amber-500 text-slate-950' : 'bg-white text-slate-700'
-            }`}
-          >
-            <span>Kho</span>
-            {lowStockCount > 0 && (
-              <span className="px-1 py-0.2 rounded-full text-[10px] bg-rose-500 text-white font-mono">
-                {lowStockCount}
-              </span>
-            )}
-          </button>
+          {!isPartnerMode() && (
+            <button
+              onClick={() => handleSelectTab('inventory')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold shrink-0 flex items-center gap-1 ${
+                activeTab === 'inventory' ? 'bg-amber-500 text-slate-950' : 'bg-white text-slate-700'
+              }`}
+            >
+              <span>Kho</span>
+              {lowStockCount > 0 && (
+                <span className="px-1 py-0.2 rounded-full text-[10px] bg-rose-500 text-white font-mono">
+                  {lowStockCount}
+                </span>
+              )}
+            </button>
+          )}
           <button
             onClick={() => handleSelectTab('analytics')}
             className={`px-3 py-1.5 rounded-lg text-xs font-bold shrink-0 ${
@@ -767,16 +791,14 @@ export default function App() {
           >
             Bảng Giá SP
           </button>
-          {!isPartnerMode() && (
-            <button
-              onClick={() => handleSelectTab('customers')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold shrink-0 ${
-                activeTab === 'customers' ? 'bg-amber-500 text-slate-950' : 'bg-white text-slate-700'
-              }`}
-            >
-              Khách & Nợ
-            </button>
-          )}
+          <button
+            onClick={() => handleSelectTab('customers')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-bold shrink-0 ${
+              activeTab === 'customers' ? 'bg-amber-500 text-slate-950' : 'bg-white text-slate-700'
+            }`}
+          >
+            Khách & Nợ
+          </button>
           {!isPartnerMode() && (
             <button
               onClick={() => setIsDataManagementOpen(true)}
@@ -791,7 +813,7 @@ export default function App() {
         {activeTab === 'pos' && (
           <SalesInvoiceForm
             products={partnerProducts}
-            customers={isPartnerMode() ? [] : customers}
+            customers={partnerCustomers}
             allOrders={partnerOrders}
             materials={materials}
             combos={partnerCombos}
@@ -809,7 +831,7 @@ export default function App() {
         {/* Tab Phụ: Theo dõi doanh thu mẫu S1a (Chỉ cho bản Đối Tác / Partner View) */}
         {activeTab === 's1a' && isPartnerMode() && (
           <RevenueTrackingS1aView
-            orders={orders}
+            orders={partnerOrders}
             workshop={workshop}
             userContext={userContext}
           />
@@ -831,8 +853,8 @@ export default function App() {
           />
         )}
 
-        {/* Tab 3: Inventory & Material Management (Kho Nhập Liệu) */}
-        {activeTab === 'inventory' && (
+        {/* Tab 3: Inventory & Material Management (Ẩn hoàn toàn ở bản đối tác) */}
+        {activeTab === 'inventory' && !isPartnerMode() && (
           <InventoryManagementView
             materials={materials}
             stockImports={stockImports}
@@ -854,7 +876,7 @@ export default function App() {
           />
         )}
 
-        {/* Tab 4: Monthly & Yearly Analytics with Profit & Loss (Doanh thu đã giảm 20% tự động nếu ở bản đối tác) */}
+        {/* Tab 4: Monthly & Yearly Analytics with Profit & Loss */}
         {activeTab === 'analytics' && (
           <AnalyticsView
             orders={partnerOrders}
@@ -863,7 +885,7 @@ export default function App() {
             customers={partnerCustomers}
             currentUserEmail={currentUser?.email}
             onResetYearData={isPartnerMode() ? undefined : handleResetYearData}
-            archivedDeletedRevenues={archivedDeletedCustomerRevenues}
+            archivedDeletedRevenues={partnerArchivedRevenues}
           />
         )}
 
@@ -879,21 +901,23 @@ export default function App() {
           />
         )}
 
-        {/* Tab 6: Customers & Debt Management (Ẩn hoàn toàn khỏi bản đối tác) */}
-        {activeTab === 'customers' && !isPartnerMode() && (
+        {/* Tab 6: Customers & Debt Management (Hiển thị ở cả bản gốc và bản đối tác - loại trừ khách đã khóa ở bản đối tác) */}
+        {activeTab === 'customers' && (
           <CustomerManagementView
-            customers={customers}
-            orders={orders}
+            customers={partnerCustomers}
+            orders={partnerOrders}
             workshop={workshop}
-            onAddCustomer={handleAddCustomer}
-            onUpdateCustomer={handleUpdateCustomer}
-            onDeleteCustomer={handleDeleteCustomer}
-            onRecordDebtPayment={handleRecordDebtPayment}
+            onAddCustomer={isPartnerMode() ? () => {} : handleAddCustomer}
+            onUpdateCustomer={isPartnerMode() ? () => {} : handleUpdateCustomer}
+            onDeleteCustomer={isPartnerMode() ? undefined : handleDeleteCustomer}
+            onRecordDebtPayment={isPartnerMode() ? () => {} : handleRecordDebtPayment}
             onPrintOrder={(order) => setActivePrintOrder(order)}
             onViewCustomerOrders={(cId) => {
-              handleSelectTab('orders');
+              if (!isPartnerMode()) {
+                handleSelectTab('orders');
+              }
             }}
-            archivedDeletedRevenues={archivedDeletedCustomerRevenues}
+            archivedDeletedRevenues={partnerArchivedRevenues}
           />
         )}
       </main>

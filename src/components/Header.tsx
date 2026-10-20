@@ -122,23 +122,25 @@ export const Header: React.FC<HeaderProps> = ({
               </button>
             )}
 
-            {/* Tab 3: Kho & Nhập Liệu */}
-            <button
-              onClick={() => setActiveTab('inventory')}
-              className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold transition cursor-pointer shrink-0 relative ${
-                activeTab === 'inventory'
-                  ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
-                  : 'text-slate-300 hover:text-white hover:bg-slate-800'
-              }`}
-            >
-              <Boxes className="w-4 h-4" />
-              <span>Kho Vật Tư</span>
-              {lowStockCount > 0 && (
-                <span className="px-1.5 py-0.2 rounded-full text-[10px] font-mono font-black bg-rose-500 text-white animate-pulse">
-                  {lowStockCount}
-                </span>
-              )}
-            </button>
+            {/* Tab 3: Kho & Nhập Liệu (Ẩn ở bản đối tác) */}
+            {!isPartner && (
+              <button
+                onClick={() => setActiveTab('inventory')}
+                className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold transition cursor-pointer shrink-0 relative ${
+                  activeTab === 'inventory'
+                    ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
+                    : 'text-slate-300 hover:text-white hover:bg-slate-800'
+                }`}
+              >
+                <Boxes className="w-4 h-4" />
+                <span>Kho Vật Tư</span>
+                {lowStockCount > 0 && (
+                  <span className="px-1.5 py-0.2 rounded-full text-[10px] font-mono font-black bg-rose-500 text-white animate-pulse">
+                    {lowStockCount}
+                  </span>
+                )}
+              </button>
+            )}
 
             {/* Tab 4: Thống Kê Lời Lãi */}
             <button
@@ -166,20 +168,18 @@ export const Header: React.FC<HeaderProps> = ({
               <span>Bảng Giá Mã SP</span>
             </button>
 
-            {/* Tab 6: Khách Hàng & Sổ Nợ (ẨN HOÀN TOÀN Ở BẢN ĐỐI TÁC) */}
-            {!isPartner && (
-              <button
-                onClick={() => setActiveTab('customers')}
-                className={`hidden sm:flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold transition cursor-pointer shrink-0 ${
-                  activeTab === 'customers'
-                    ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
-                    : 'text-slate-300 hover:text-white hover:bg-slate-800'
-                }`}
-              >
-                <Users className="w-4 h-4" />
-                <span>Khách & Sổ Nợ</span>
-              </button>
-            )}
+            {/* Tab 6: Khách Hàng & Sổ Nợ (Hiển thị cả bản gốc và bản đối tác - loại trừ khách đã khóa) */}
+            <button
+              onClick={() => setActiveTab('customers')}
+              className={`hidden sm:flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold transition cursor-pointer shrink-0 ${
+                activeTab === 'customers'
+                  ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
+                  : 'text-slate-300 hover:text-white hover:bg-slate-800'
+              }`}
+            >
+              <Users className="w-4 h-4" />
+              <span>Khách & Sổ Nợ</span>
+            </button>
           </nav>
 
           {/* Right Tools: User info + Data Management + Settings + Logout */}

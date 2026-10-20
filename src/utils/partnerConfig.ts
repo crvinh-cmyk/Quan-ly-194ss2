@@ -115,13 +115,13 @@ export function getRevenueMultiplier(): number {
     }
   }
 
-  // Mặc định giảm 20% doanh thu (nhân với 0.8) cho bản đối tác
-  return 0.8;
+  // Mặc định 1.0 (nguyên vẹn 100% doanh thu và giá gốc cho bản đối tác, đã hủy bỏ giảm 20%)
+  return 1.0;
 }
 
 /**
  * Hàm helper tính toán giá tiền hiển thị:
- * getDisplayPrice(amount) = amount * MULTIPLIER (mặc định 0.8 ở bản đối tác, 1.0 ở bản gốc)
+ * getDisplayPrice(amount) = amount * MULTIPLIER (mặc định 1.0)
  */
 export function getDisplayPrice(amount: number): number {
   if (!amount || amount <= 0 || isNaN(amount)) return 0;
@@ -136,9 +136,8 @@ export const applyPartnerDiscount = getDisplayPrice;
 
 /**
  * Chuyển đổi dữ liệu đơn hàng cho bản xem của đối tác:
- * - subtotal, discount, paid, totalDue được nhân với MULTIPLIER (0.8)
- * - previousDebt được đặt về 0 để bảo mật công nợ
- * - Từng item trong đơn hàng đơn giá và thành tiền cũng được nhân với MULTIPLIER (0.8)
+ * - subtotal, discount, paid, totalDue được nhân với MULTIPLIER (1.0)
+ * - Từng item trong đơn hàng đơn giá và thành tiền cũng được nhân với MULTIPLIER (1.0)
  */
 export function transformOrderForPartner(order: any): any {
   if (!isPartnerMode() || !order) {
@@ -152,7 +151,7 @@ export function transformOrderForPartner(order: any): any {
     discount: Math.round((order.discount || 0) * mult),
     paid: Math.round((order.paid || 0) * mult),
     totalDue: Math.round((order.totalDue || 0) * mult),
-    previousDebt: 0, // Tuyệt đối không để lộ sổ nợ khách hàng cho đối tác
+    previousDebt: order.previousDebt || 0,
     items: Array.isArray(order.items)
       ? order.items.map((item: any) => ({
           ...item,

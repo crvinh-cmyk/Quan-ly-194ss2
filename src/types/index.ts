@@ -51,6 +51,7 @@ export interface Customer {
   initialYearlyRevenue?: number; // Doanh thu ban đầu trước khi dùng phần mềm (cho năm hiện tại hoặc mặc định)
   initialYearlyRevenues?: Record<number, number>; // Doanh thu ban đầu theo từng năm { 2026: 25000000, 2025: ... }
   isFavorite?: boolean;       // Khách hàng yêu thích (⭐)
+  isLocked?: boolean;         // Khách hàng đã khóa (🔒 - Đưa vào danh sách riêng)
   favoriteSettlements?: Record<string, FavoriteMonthlySettlement>; // Theo dõi công nợ theo tháng "YYYY-MM"
   userId?: string;
   createdBy?: string;

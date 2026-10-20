@@ -3,10 +3,11 @@ import { Customer, Order, ProductCategory, WorkshopInfo, ArchivedDeletedCustomer
 import { FavoriteCustomersSection } from './FavoriteCustomersSection';
 import { formatCurrency, formatDateVN, getCustomerFacingName, isFreelanceWalkInPool, isRetailWalkInPool, isWalkInPoolCustomer } from '../utils/formatters';
 import { calculateCustomerDebt } from '../utils/storage';
+import { isPartnerMode } from '../utils/partnerConfig';
 import {
   Users, Plus, Search, DollarSign, Phone, MapPin, CheckCircle2, History, Star,
   AlertCircle, Building2, Camera, User, Award, Crown, TrendingUp, Calendar,
-  ArrowUpDown, Sparkles, Edit3, Printer, Eye, X, ExternalLink, Trash2
+  ArrowUpDown, Sparkles, Edit3, Printer, Eye, X, ExternalLink, Trash2, Lock, Unlock
 } from 'lucide-react';
 import { MoneyInput } from './MoneyInput';
 
@@ -35,11 +36,12 @@ export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
   onPrintOrder,
   archivedDeletedRevenues = []
 }) => {
+  const isPartner = isPartnerMode();
   const [activeSubTab, setActiveSubTab] = useState<'all' | 'favorites'>('all');
   const [toastMsg, setToastMsg] = useState<string>('');
   const showToast = (msg: string) => { setToastMsg(msg); setTimeout(() => setToastMsg(''), 3500); };
   const [searchTerm, setSearchTerm] = useState('');
-  const [debtFilter, setDebtFilter] = useState<'all' | 'hasDebt' | 'favorites'>('all');
+  const [debtFilter, setDebtFilter] = useState<'all' | 'hasDebt' | 'favorites' | 'locked'>('all');
   const [categoryFilter, setCategoryFilter] = useState<'all' | ProductCategory>('all');
 
   // Year tracking for "Tổng doanh thu năm" (Mặc định năm hiện tại 2026)
@@ -65,6 +67,7 @@ export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
   const [initialYearlyRevenue, setInitialYearlyRevenue] = useState<number>(0);
   const [notes, setNotes] = useState('');
   const [isFavorite, setIsFavorite] = useState<boolean>(false);
+  const [isLocked, setIsLocked] = useState<boolean>(false);
   const [customerError, setCustomerError] = useState('');
 
   // Pay Debt Modal
@@ -174,6 +177,7 @@ export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
     let result = customersWithMetrics.filter(c => {
       if (debtFilter === 'hasDebt' && c.currentDebt <= 0) return false;
       if (debtFilter === 'favorites' && !c.isFavorite) return false;
+      if (debtFilter === 'locked' && !c.isLocked) return false;
       if (categoryFilter !== 'all' && c.customerType !== categoryFilter) return false;
       if (!searchTerm.trim()) return true;
       const q = searchTerm.toLowerCase().trim();
@@ -198,11 +202,18 @@ export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
     return result;
   }, [customersWithMetrics, debtFilter, categoryFilter, searchTerm, sortBy]);
 
-    const handleToggleFavorite = (cust: Customer, e?: React.MouseEvent) => {
+  const handleToggleFavorite = (cust: Customer, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
     const nextVal = !cust.isFavorite;
     onUpdateCustomer({ ...cust, isFavorite: nextVal });
     showToast(nextVal ? `⭐ Đã thêm "${cust.name}" vào Khách Yêu Thích!` : `Đã bỏ gắn sao "${cust.name}"`);
+  };
+
+  const handleToggleLocked = (cust: Customer, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    const nextVal = !cust.isLocked;
+    onUpdateCustomer({ ...cust, isLocked: nextVal });
+    showToast(nextVal ? `🔒 Đã khóa "${cust.name}" (đã đưa vào danh sách riêng)` : `🔓 Đã mở khóa "${cust.name}"`);
   };
 
   const handleOpenAdd = () => {
@@ -216,6 +227,7 @@ export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
     setInitialYearlyRevenue(0);
     setNotes('');
     setIsFavorite(false);
+    setIsLocked(false);
     setCustomerError('');
     setIsCustomerModalOpen(true);
   };
@@ -234,6 +246,7 @@ export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
     setInitialYearlyRevenue(curInitialYearly);
     setNotes(c.notes || '');
     setIsFavorite(c.isFavorite || false);
+    setIsLocked(c.isLocked || false);
     setCustomerError('');
     setIsCustomerModalOpen(true);
   };
@@ -261,7 +274,8 @@ export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
         initialYearlyRevenue: Number(initialYearlyRevenue) || 0,
         initialYearlyRevenues: updatedYearlyRevenues,
         notes: notes.trim() || undefined,
-        isFavorite: isFavorite
+        isFavorite: isFavorite,
+        isLocked: isLocked
       });
     } else {
       onAddCustomer({
@@ -275,6 +289,8 @@ export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
         initialYearlyRevenue: Number(initialYearlyRevenue) || 0,
         initialYearlyRevenues: { [selectedYear]: Number(initialYearlyRevenue) || 0 },
         notes: notes.trim() || undefined,
+        isFavorite: isFavorite,
+        isLocked: isLocked,
         createdAt: new Date().toISOString()
       });
     }
@@ -525,9 +541,10 @@ export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
             <option value="Khách Lẻ">👤 Khách Lẻ</option>
           </select>
 
-          {/* Debt Filter Buttons */}
-          <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl">
+          {/* Debt & Lock Filter Buttons */}
+          <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl flex-wrap">
             <button
+              type="button"
               onClick={() => setDebtFilter('all')}
               className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
                 debtFilter === 'all' ? 'bg-white text-slate-900 shadow-2xs' : 'text-slate-600 hover:text-slate-900'
@@ -536,6 +553,7 @@ export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
               Tất cả ({customers.length})
             </button>
             <button
+              type="button"
               onClick={() => setDebtFilter('hasDebt')}
               className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
                 debtFilter === 'hasDebt' ? 'bg-red-600 text-white shadow-2xs' : 'text-red-700 hover:text-red-900'
@@ -543,6 +561,18 @@ export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
             >
               Còn nợ ({customersWithMetrics.filter(c => c.currentDebt > 0).length})
             </button>
+            {!isPartner && (
+              <button
+                type="button"
+                onClick={() => setDebtFilter('locked')}
+                className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer flex items-center gap-1 ${
+                  debtFilter === 'locked' ? 'bg-rose-600 text-white shadow-2xs' : 'text-slate-600 hover:text-rose-700'
+                }`}
+              >
+                <Lock className="w-3 h-3" />
+                <span>Đã khóa ({customersWithMetrics.filter(c => c.isLocked).length})</span>
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -580,8 +610,31 @@ export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
                             : "text-slate-300 hover:text-amber-400"
                         }`} />
                       </button>
+
+                      {/* Nút Ổ Khóa - Khóa / Mở khóa khách hàng (Danh sách riêng) - Ẩn ở bản đối tác */}
+                      {!isPartner && (
+                        <button
+                          type="button"
+                          onClick={(e) => handleToggleLocked(cust, e)}
+                          className="p-1 rounded-lg hover:bg-rose-100/70 transition cursor-pointer shrink-0"
+                          title={cust.isLocked ? "Mở khóa khách hàng (Bỏ khỏi danh sách riêng)" : "Khóa khách hàng 🔒 (Đưa vào danh sách riêng)"}
+                        >
+                          {cust.isLocked ? (
+                            <Lock className="w-4 h-4 text-rose-600 fill-rose-100 drop-shadow-xs" />
+                          ) : (
+                            <Unlock className="w-4 h-4 text-slate-300 hover:text-rose-500 transition" />
+                          )}
+                        </button>
+                      )}
+
                       <h3 className="font-bold text-sm text-slate-900 flex items-center gap-1">
                         <span>{cust.name}</span>
+                        {!isPartner && cust.isLocked && (
+                          <span className="px-1.5 py-0.2 rounded-md text-[10px] font-bold bg-rose-100 text-rose-700 border border-rose-200 inline-flex items-center gap-0.5" title="Khách hàng đã khóa (Thuộc danh sách riêng)">
+                            <Lock className="w-2.5 h-2.5 text-rose-600" />
+                            <span>Đã khóa</span>
+                          </span>
+                        )}
                         {isMvp && (
                           <span title="Khách hàng MVP có doanh thu cao nhất năm" className="cursor-help">
                             👑
@@ -904,6 +957,22 @@ export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
                   <span>Đánh dấu là Khách Hàng Yêu Thích ⭐ (Tự động tạo bảng theo dõi công nợ tháng)</span>
                 </div>
               </label>
+
+              {/* Toggle Khóa Khách Hàng 🔒 - Ẩn ở bản đối tác */}
+              {!isPartner && (
+                <label className="flex items-center gap-2.5 p-3 rounded-xl border border-rose-200 bg-rose-50/60 cursor-pointer hover:bg-rose-100/60 transition">
+                  <input
+                    type="checkbox"
+                    checked={isLocked}
+                    onChange={(e) => setIsLocked(e.target.checked)}
+                    className="w-4 h-4 rounded text-rose-600 focus:ring-rose-500 cursor-pointer"
+                  />
+                  <div className="flex items-center gap-1.5 text-xs font-bold text-slate-900">
+                    <Lock className={`w-4 h-4 ${isLocked ? "text-rose-600 fill-rose-100" : "text-slate-400"}`} />
+                    <span>Khóa khách hàng 🔒 (Đưa vào danh sách riêng)</span>
+                  </div>
+                </label>
+              )}
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1">
                   Phân loại đối tượng & Bảng giá áp dụng *
