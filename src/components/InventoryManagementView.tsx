@@ -9,7 +9,7 @@ import {
   ArrowDownLeft, FileText, Calendar, DollarSign, PackagePlus,
   Edit, Trash2, SlidersHorizontal, RefreshCw, X, ArrowUpDown, Truck, ChevronRight,
   BookOpen, Sparkles, ShoppingBag, ArrowRight, Building2, Filter, Layers, PieChart,
-  Settings, Check, RotateCcw, Package, Droplet, Camera
+  Settings, Check, RotateCcw, Package, Droplet, Camera, Star, ChevronDown, ChevronUp
 } from 'lucide-react';
 import { MoneyInput } from './MoneyInput';
 import { InkInventoryTracking } from './InkInventoryTracking';
@@ -124,10 +124,83 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
   // Active Sub-tab: 'inventory' | 'supplier_expenses' | 'ink_tracking' | 'history' | 'board_prices' | 'sales_deductions'
   const [activeSubTab, setActiveSubTab] = useState<'inventory' | 'supplier_expenses' | 'ink_tracking' | 'history' | 'board_prices' | 'sales_deductions'>('inventory');
   
+  // Tab con cho phân hệ xuất vật tư: 'history' (Lịch Sử Khấu Trừ) | 'monthly_summary' (Thống kê ván/fomex đã xuất trong tháng)
+  const [deductionsSubTab, setDeductionsSubTab] = useState<'history' | 'monthly_summary'>('history');
+
   // Filters for Material Inventory
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
-  const [statusFilter, setStatusFilter] = useState<'all' | 'low' | 'instock' | 'out'>('all');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'low' | 'instock' | 'out' | 'tracked'>('all');
+
+  // Tracked Materials Watchlist ("Vật tư cần theo dõi" - Đánh dấu thủ công bằng ngôi sao ⭐)
+  const [trackedMaterialIds, setTrackedMaterialIds] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem('inventory_tracked_materials');
+      if (saved) {
+        return JSON.parse(saved);
+      }
+    } catch (e) {
+      console.error('Error loading inventory_tracked_materials:', e);
+    }
+    return [];
+  });
+
+  // Đồng bộ các vật tư có isTracked === true từ props
+  useEffect(() => {
+    const fromProps = materials.filter(m => m.isTracked).map(m => m.id);
+    if (fromProps.length > 0) {
+      setTrackedMaterialIds(prev => {
+        const merged = Array.from(new Set([...prev, ...fromProps]));
+        if (merged.length !== prev.length) {
+          try {
+            localStorage.setItem('inventory_tracked_materials', JSON.stringify(merged));
+          } catch (e) {}
+          return merged;
+        }
+        return prev;
+      });
+    }
+  }, [materials]);
+
+  const isMaterialTracked = (mat: Material) => {
+    return mat.isTracked === true || trackedMaterialIds.includes(mat.id) || trackedMaterialIds.includes(mat.code);
+  };
+
+  const handleToggleTrackedMaterial = (mat: Material) => {
+    const currentlyTracked = isMaterialTracked(mat);
+    const nextTracked = !currentlyTracked;
+
+    setTrackedMaterialIds(prev => {
+      let nextList: string[];
+      if (nextTracked) {
+        nextList = Array.from(new Set([...prev, mat.id, mat.code]));
+      } else {
+        nextList = prev.filter(id => id !== mat.id && id !== mat.code);
+      }
+      try {
+        localStorage.setItem('inventory_tracked_materials', JSON.stringify(nextList));
+      } catch (e) {}
+      return nextList;
+    });
+
+    if (onSaveMaterial) {
+      onSaveMaterial({
+        ...mat,
+        isTracked: nextTracked
+      });
+    }
+  };
+
+  const trackedMaterials = useMemo(() => {
+    return materials.filter(m => isMaterialTracked(m));
+  }, [materials, trackedMaterialIds]);
+
+  // Bộ lọc & trạng thái cho Tab 2: Thống kê số lượng ván/fomex đã xuất trong tháng
+  const [statsMonth, setStatsMonth] = useState<number>(() => new Date().getMonth() + 1);
+  const [statsYear, setStatsYear] = useState<number>(() => new Date().getFullYear());
+  const [statsSearchQuery, setStatsSearchQuery] = useState<string>('');
+  const [expandedMaterialId, setExpandedMaterialId] = useState<string | null>(null);
+  const [showFullYearGrid, setShowFullYearGrid] = useState<boolean>(false);
 
   // Filters for Supplier Expenses & Inward Values
   const currentYear = new Date().getFullYear();
@@ -679,6 +752,125 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
     });
   }, [salesDeductionRecords, deductionsDateFilter, deductionsCustomDate, deductionsSearchQuery, todayStr, yesterdayStr, sevenDaysAgoStr]);
 
+  // Dữ liệu thống kê số lượng ván/fomex đã xuất trong tháng cho danh sách "vật tư cần theo dõi"
+  const monthlyStatsData = useMemo(() => {
+    const monthStr = `${statsYear}-${String(statsMonth).padStart(2, '0')}`;
+
+    // Lọc các đợt trừ kho phát sinh trong tháng đã chọn
+    const monthRecords = salesDeductionRecords.filter(r => r.deductionDate.startsWith(monthStr));
+
+    // Tính toán cho từng vật tư trong danh sách theo dõi
+    const items = trackedMaterials.map(mat => {
+      let exportedMonthQty = 0;
+      const orderOccurrences: {
+        orderId: string;
+        orderNumber: string;
+        customerName: string;
+        date: string;
+        quantity: number;
+        isSupplement: boolean;
+      }[] = [];
+
+      monthRecords.forEach(rec => {
+        const matchingDeds = rec.deductions.filter(d =>
+          d.materialId === mat.id ||
+          (d.materialCode && d.materialCode.trim().toUpperCase() === mat.code.trim().toUpperCase()) ||
+          (d.materialName && d.materialName.trim().toLowerCase() === mat.name.trim().toLowerCase())
+        );
+
+        if (matchingDeds.length > 0) {
+          const qty = matchingDeds.reduce((sum, d) => sum + d.quantity, 0);
+          exportedMonthQty += qty;
+          orderOccurrences.push({
+            orderId: rec.orderId,
+            orderNumber: rec.orderNumber,
+            customerName: rec.customerName,
+            date: rec.deductionDate,
+            quantity: qty,
+            isSupplement: rec.isSupplement
+          });
+        }
+      });
+
+      // Tính tổng 12 tháng của năm đang chọn
+      const months12Data: number[] = Array.from({ length: 12 }, (_, mIdx) => {
+        const mKey = `${statsYear}-${String(mIdx + 1).padStart(2, '0')}`;
+        const recsInM = salesDeductionRecords.filter(r => r.deductionDate.startsWith(mKey));
+        let mTotal = 0;
+        recsInM.forEach(r => {
+          const match = r.deductions.filter(d =>
+            d.materialId === mat.id ||
+            (d.materialCode && d.materialCode.trim().toUpperCase() === mat.code.trim().toUpperCase()) ||
+            (d.materialName && d.materialName.trim().toLowerCase() === mat.name.trim().toLowerCase())
+          );
+          mTotal += match.reduce((sum, d) => sum + d.quantity, 0);
+        });
+        return Math.round(mTotal * 100) / 100;
+      });
+
+      const yearTotal = months12Data.reduce((sum, q) => sum + q, 0);
+
+      return {
+        material: mat,
+        exportedMonthQty: Math.round(exportedMonthQty * 100) / 100,
+        orderCount: orderOccurrences.length,
+        orderOccurrences,
+        months12Data,
+        yearTotal: Math.round(yearTotal * 100) / 100
+      };
+    });
+
+    // Lọc theo tìm kiếm trong danh sách theo dõi nếu có
+    const filteredItems = items.filter(it => {
+      if (!statsSearchQuery.trim()) return true;
+      const q = statsSearchQuery.toLowerCase().trim();
+      return (
+        it.material.name.toLowerCase().includes(q) ||
+        it.material.code.toLowerCase().includes(q) ||
+        (it.material.category && it.material.category.toLowerCase().includes(q))
+      );
+    });
+
+    const totalMonthUnits = items.reduce((sum, it) => sum + it.exportedMonthQty, 0);
+    const totalOrdersInMonth = new Set(
+      items.flatMap(it => it.orderOccurrences.map(o => o.orderNumber))
+    ).size;
+    const topItem = items.length > 0
+      ? [...items].sort((a, b) => b.exportedMonthQty - a.exportedMonthQty)[0]
+      : null;
+
+    return {
+      items: filteredItems,
+      allTrackedItems: items,
+      totalMonthUnits: Math.round(totalMonthUnits * 100) / 100,
+      totalOrdersInMonth,
+      topItem
+    };
+  }, [trackedMaterials, salesDeductionRecords, statsMonth, statsYear, statsSearchQuery]);
+
+  const handlePrevStatsMonth = () => {
+    if (statsMonth === 1) {
+      setStatsMonth(12);
+      setStatsYear(prev => prev - 1);
+    } else {
+      setStatsMonth(prev => prev - 1);
+    }
+  };
+
+  const handleNextStatsMonth = () => {
+    if (statsMonth === 12) {
+      setStatsMonth(1);
+      setStatsYear(prev => prev + 1);
+    } else {
+      setStatsMonth(prev => prev + 1);
+    }
+  };
+
+  const handleCurrentStatsMonth = () => {
+    setStatsMonth(new Date().getMonth() + 1);
+    setStatsYear(new Date().getFullYear());
+  };
+
   // Helper function to check if import receipt is completed or legacy history (<= 03/10/2026)
   const isImportCompletedOrLegacy = (imp: StockImportReceipt): boolean => {
     if ((imp.date || "") <= "2026-10-03") return true;
@@ -813,6 +1005,9 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
       if (selectedCategory !== 'all' && m.category !== selectedCategory) return false;
 
       // Status
+      if (statusFilter === 'tracked') {
+        return isMaterialTracked(m);
+      }
       if (statusFilter === 'low') {
         return m.stockQuantity > 0 && m.stockQuantity <= m.minStockAlert;
       }
@@ -825,7 +1020,7 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
 
       return true;
     });
-  }, [materials, searchQuery, selectedCategory, statusFilter]);
+  }, [materials, searchQuery, selectedCategory, statusFilter, trackedMaterialIds]);
 
   // Handlers for Material CRUD (Đã bỏ giá nhập)
   const handleOpenAddModal = (mat?: Material) => {
@@ -1518,15 +1713,39 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
 
         <button
           type="button"
-          onClick={() => setActiveSubTab('sales_deductions')}
+          onClick={() => {
+            setActiveSubTab('sales_deductions');
+            setDeductionsSubTab('history');
+          }}
           className={`flex items-center gap-2 px-4 py-2.5 font-bold text-sm border-b-2 transition cursor-pointer shrink-0 ${
-            activeSubTab === 'sales_deductions'
-              ? 'border-amber-500 text-amber-700 bg-amber-50/50'
+            activeSubTab === 'sales_deductions' && deductionsSubTab === 'history'
+              ? 'border-purple-600 text-purple-700 bg-purple-50/50'
               : 'border-transparent text-slate-600 hover:text-slate-900'
           }`}
         >
           <ShoppingBag className="w-4 h-4" />
-          <span>Vật Tư Trừ Theo Đơn Bán Hàng</span>
+          <span>Lịch Sử Vật Tư Khấu Trừ Tự Động Theo Đơn Bán Hàng</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => {
+            setActiveSubTab('sales_deductions');
+            setDeductionsSubTab('monthly_summary');
+          }}
+          className={`flex items-center gap-2 px-4 py-2.5 font-bold text-sm border-b-2 transition cursor-pointer shrink-0 ${
+            activeSubTab === 'sales_deductions' && deductionsSubTab === 'monthly_summary'
+              ? 'border-indigo-600 text-indigo-700 bg-indigo-50/60 font-black shadow-2xs'
+              : 'border-transparent text-slate-600 hover:text-slate-900'
+          }`}
+        >
+          <Star className={`w-4 h-4 ${trackedMaterials.length > 0 ? 'text-amber-500 fill-amber-400' : 'text-slate-400'}`} />
+          <span>Thống kê số lượng ván/fomex đã xuất trong tháng</span>
+          {trackedMaterials.length > 0 && (
+            <span className="px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300">
+              {trackedMaterials.length}
+            </span>
+          )}
         </button>
 
         <button
@@ -1634,6 +1853,19 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
                 >
                   Hết hàng ({outOfStockMaterials.length})
                 </button>
+                <button
+                  type="button"
+                  onClick={() => setStatusFilter('tracked')}
+                  className={`px-2.5 py-1.5 rounded-lg transition flex items-center gap-1 ${
+                    statusFilter === 'tracked'
+                      ? 'bg-amber-500 text-white shadow-xs font-black'
+                      : 'text-amber-800 hover:bg-amber-100/70 font-semibold'
+                  }`}
+                  title="Chỉ hiển thị các vật tư bạn đã gắn sao ⭐ cần theo dõi"
+                >
+                  <Star className={`w-3.5 h-3.5 ${statusFilter === 'tracked' ? 'fill-white text-white' : 'fill-amber-400 text-amber-500'}`} />
+                  <span>Cần theo dõi ({trackedMaterials.length})</span>
+                </button>
               </div>
             </div>
           </div>
@@ -1645,7 +1877,7 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
                 <thead>
                   <tr className="bg-slate-100 text-slate-700 font-extrabold border-b border-slate-200">
                     <th className="py-3 px-3 w-12 text-center">STT</th>
-                    <th className="py-3 px-3 w-28">Mã Vật Tư</th>
+                    <th className="py-3 px-3 w-32">Mã Vật Tư</th>
                     <th className="py-3 px-3">Tên Vật Liệu & Quy Cách</th>
                     <th className="py-3 px-3 w-32">Nhóm</th>
                     <th className="py-3 px-2 w-16 text-center">ĐVT</th>
@@ -1680,7 +1912,28 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
                           }`}
                         >
                           <td className="py-3 px-3 text-center text-slate-400 font-mono">{idx + 1}</td>
-                          <td className="py-3 px-3 font-mono font-bold text-slate-900">{mat.code}</td>
+                          <td className="py-3 px-3 font-mono font-bold text-slate-900">
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleToggleTrackedMaterial(mat);
+                                }}
+                                className="p-1 rounded-md hover:bg-amber-100/70 transition cursor-pointer group shrink-0"
+                                title={isMaterialTracked(mat) ? "Bỏ khỏi danh sách theo dõi ván/fomex (⭐)" : "Đánh dấu vào danh sách vật tư cần theo dõi (⭐)"}
+                              >
+                                <Star
+                                  className={`w-4 h-4 transition-transform group-hover:scale-125 ${
+                                    isMaterialTracked(mat)
+                                      ? "text-amber-500 fill-amber-400 drop-shadow-xs"
+                                      : "text-slate-300 hover:text-amber-400"
+                                  }`}
+                                />
+                              </button>
+                              <span>{mat.code}</span>
+                            </div>
+                          </td>
                           <td className="py-3 px-3">
                             <div className="font-bold text-slate-900 text-sm">{mat.name}</div>
                             {mat.supplier && (
@@ -2349,10 +2602,70 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
         <BoardCorePriceTable currentUserEmail={undefined} materials={materials} />
       )}
 
-      {/* SUB-TAB 4: SALES ORDERS MATERIAL DEDUCTIONS */}
+      {/* SUB-TAB 4: SALES ORDERS MATERIAL DEDUCTIONS & MONTHLY BOARD STATS */}
       {activeSubTab === 'sales_deductions' && (
         <div className="space-y-4">
-          <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+          {/* Sub-tab Navigation: Tab 1 (Lịch sử khấu trừ) & Tab 2 (Thống kê ván/fomex đã xuất trong tháng) */}
+          <div className="flex flex-wrap items-center justify-between gap-3 bg-white p-2 rounded-2xl border border-slate-200 shadow-2xs">
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setDeductionsSubTab('history')}
+                className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs sm:text-sm font-extrabold transition cursor-pointer ${
+                  deductionsSubTab === 'history'
+                    ? 'bg-purple-600 text-white shadow-md'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                }`}
+              >
+                <Clock className="w-4 h-4" />
+                <span>1. Lịch Sử Vật Tư Khấu Trừ Tự Động Theo Đơn Bán Hàng</span>
+                <span className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${
+                  deductionsSubTab === 'history' ? 'bg-purple-800 text-purple-100' : 'bg-slate-200 text-slate-700'
+                }`}>
+                  {filteredDeductionRecords.length}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setDeductionsSubTab('monthly_summary')}
+                className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs sm:text-sm font-extrabold transition cursor-pointer ${
+                  deductionsSubTab === 'monthly_summary'
+                    ? 'bg-indigo-600 text-white shadow-md'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                }`}
+              >
+                <Star className="w-4 h-4 text-amber-300 fill-amber-300" />
+                <span>2. Thống kê số lượng ván/fomex đã xuất trong tháng</span>
+                <span className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${
+                  deductionsSubTab === 'monthly_summary' ? 'bg-indigo-800 text-indigo-100' : 'bg-amber-100 text-amber-800 border border-amber-300'
+                }`}>
+                  ⭐ {trackedMaterials.length} theo dõi
+                </span>
+              </button>
+            </div>
+
+            {deductionsSubTab === 'monthly_summary' && trackedMaterials.length > 0 && (
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowFullYearGrid(prev => !prev)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer border ${
+                    showFullYearGrid
+                      ? 'bg-indigo-50 border-indigo-300 text-indigo-800 shadow-xs'
+                      : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                  }`}
+                >
+                  <PieChart className="w-3.5 h-3.5 text-indigo-600" />
+                  <span>{showFullYearGrid ? 'Thu Gọn Bảng 12 Tháng' : '📊 Đối Chiếu 12 Tháng'}</span>
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* TAB 1: LỊCH SỬ KHẤU TRỪ TỰ ĐỘNG THEO ĐƠN BÁN HÀNG */}
+          {deductionsSubTab === 'history' && (
+            <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
             <div className="p-4 bg-slate-50 border-b border-slate-200 flex flex-col md:flex-row md:items-center justify-between gap-3">
               <div>
                 <div className="flex items-center gap-2">
@@ -2573,8 +2886,486 @@ export const InventoryManagementView: React.FC<InventoryManagementViewProps> = (
               </table>
             </div>
           </div>
-        </div>
-      )}
+        )}
+
+        {/* TAB 2: THỐNG KÊ SỐ LƯỢNG VÁN / FOMEX ĐÃ XUẤT TRONG THÁNG */}
+        {deductionsSubTab === 'monthly_summary' && (
+          <div className="space-y-4">
+            {/* TRƯỜNG HỢP 1: DANH SÁCH THEO DÕI ĐANG ĐỂ TRỐNG (THEO ĐÚNG YÊU CẦU CỦA USER) */}
+            {trackedMaterials.length === 0 ? (
+              <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-8 sm:p-12 text-center">
+                <div className="w-16 h-16 bg-amber-50 rounded-2xl border border-amber-200 flex items-center justify-center mx-auto mb-4 text-amber-500 shadow-sm">
+                  <Star className="w-8 h-8 fill-amber-400" />
+                </div>
+                <h3 className="text-lg font-black text-slate-800 mb-2">
+                  Danh Sách Vật Tư Cần Theo Dõi Đang Để Trống
+                </h3>
+                <p className="text-sm text-slate-600 max-w-lg mx-auto mb-6 leading-relaxed">
+                  Bảng thống kê số lượng ván/fomex xuất trong tháng hiện đang để trống chờ bạn tạo danh sách.
+                  Hãy sang tab <strong>"Danh Sách Vật Tư Tồn Kho"</strong> và bấm vào biểu tượng ngôi sao <span className="inline-flex items-center text-amber-500 font-bold">⭐</span> bên cạnh <strong>Mã vật tư</strong> của từng loại ván MDF hoặc Fomex bạn muốn theo dõi.
+                </p>
+                <div className="flex items-center justify-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setActiveSubTab('inventory')}
+                    className="px-5 py-2.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-slate-950 font-black text-sm rounded-xl shadow-md transition cursor-pointer flex items-center gap-2"
+                  >
+                    <Boxes className="w-4 h-4" />
+                    <span>Sang "Danh Sách Vật Tư Tồn Kho" Để Đánh Dấu ⭐</span>
+                  </button>
+                </div>
+              </div>
+            ) : (
+              /* TRƯỜNG HỢP 2: ĐÃ CÓ CÁC VẬT TƯ ĐƯỢC ĐÁNH DẤU THEO DÕI */
+              <div className="space-y-4">
+                {/* BỘ ĐIỀU KHIỂN CHỌN THÁNG & NĂM */}
+                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 space-y-3">
+                  <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h3 className="font-black text-base text-slate-900 flex items-center gap-2">
+                          <span className="p-1.5 bg-indigo-100 text-indigo-700 rounded-lg">
+                            <Star className="w-4 h-4 fill-amber-400 text-amber-500" />
+                          </span>
+                          <span>Thống Kê Số Lượng Ván / Fomex Đã Xuất Trong Tháng</span>
+                        </h3>
+                        <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-indigo-100 text-indigo-800 border border-indigo-200">
+                          Tháng {statsMonth}/{statsYear}
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-500 mt-1">
+                        Liên kết tự động với Kho vật tư tồn kho: Mỗi khi phát sinh đơn hàng bán ra có trừ ván/fomex, hệ thống tự động tổng hợp số lượng xuất tại đây.
+                      </p>
+                    </div>
+
+                    {/* Năm & Chuyển tháng */}
+                    <div className="flex items-center gap-2 self-stretch md:self-auto justify-between md:justify-end">
+                      <div className="flex items-center bg-slate-100 p-1 rounded-xl border border-slate-200">
+                        <button
+                          type="button"
+                          onClick={handlePrevStatsMonth}
+                          className="px-2.5 py-1 text-xs font-bold text-slate-700 hover:bg-white rounded-lg transition cursor-pointer"
+                          title="Tháng trước"
+                        >
+                          ◀ Tháng trước
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleCurrentStatsMonth}
+                          className={`px-2.5 py-1 text-xs font-bold rounded-lg transition cursor-pointer ${
+                            statsMonth === new Date().getMonth() + 1 && statsYear === new Date().getFullYear()
+                              ? 'bg-indigo-600 text-white shadow-xs'
+                              : 'text-indigo-700 hover:bg-white'
+                          }`}
+                          title="Về tháng hiện tại"
+                        >
+                          ⚡ Tháng Này
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleNextStatsMonth}
+                          className="px-2.5 py-1 text-xs font-bold text-slate-700 hover:bg-white rounded-lg transition cursor-pointer"
+                          title="Tháng sau"
+                        >
+                          Tháng sau ▶
+                        </button>
+                      </div>
+
+                      {/* Chọn năm */}
+                      <select
+                        value={statsYear}
+                        onChange={(e) => setStatsYear(Number(e.target.value))}
+                        className="px-3 py-1.5 text-xs font-bold bg-slate-100 border border-slate-200 rounded-xl text-slate-800 outline-none cursor-pointer"
+                      >
+                        {[currentYear - 2, currentYear - 1, currentYear, currentYear + 1, currentYear + 2].map(y => (
+                          <option key={y} value={y}>Năm {y}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Dải nút bấm nhanh 12 Tháng */}
+                  <div className="grid grid-cols-6 sm:grid-cols-12 gap-1.5 pt-2 border-t border-slate-100">
+                    {Array.from({ length: 12 }, (_, i) => i + 1).map(m => {
+                      const isCur = m === statsMonth;
+                      const isThisRealMonth = m === new Date().getMonth() + 1 && statsYear === new Date().getFullYear();
+
+                      return (
+                        <button
+                          key={m}
+                          type="button"
+                          onClick={() => setStatsMonth(m)}
+                          className={`py-1.5 text-xs font-bold rounded-xl transition cursor-pointer flex flex-col items-center justify-center relative ${
+                            isCur
+                              ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
+                              : 'bg-slate-50 hover:bg-indigo-50 text-slate-700 hover:text-indigo-900 border border-slate-200'
+                          }`}
+                        >
+                          <span>Thg {m}</span>
+                          {isThisRealMonth && (
+                            <span className={`w-1 h-1 rounded-full ${isCur ? 'bg-amber-300' : 'bg-indigo-600'}`}></span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* 4 THẺ CHỈ SỐ NHANH (KPI CARDS) */}
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+                  <div className="bg-gradient-to-br from-amber-50 to-amber-100/60 border border-amber-200 rounded-2xl p-4 shadow-sm">
+                    <div className="flex items-center justify-between text-amber-800 mb-1">
+                      <span className="text-xs font-black uppercase tracking-wider">Vật Tư Theo Dõi</span>
+                      <Star className="w-4 h-4 fill-amber-400 text-amber-500" />
+                    </div>
+                    <div className="text-2xl sm:text-3xl font-black text-amber-950 font-mono">
+                      {trackedMaterials.length}
+                      <span className="text-xs font-normal text-amber-800 ml-1">loại ván/fomex</span>
+                    </div>
+                    <p className="text-[11px] text-amber-700 font-medium mt-1">
+                      Đang được gắn sao theo dõi
+                    </p>
+                  </div>
+
+                  <div className="bg-gradient-to-br from-indigo-50 to-indigo-100/60 border border-indigo-200 rounded-2xl p-4 shadow-sm">
+                    <div className="flex items-center justify-between text-indigo-800 mb-1">
+                      <span className="text-xs font-black uppercase tracking-wider">Tổng Đã Xuất (Tháng {statsMonth})</span>
+                      <TrendingDown className="w-4 h-4 text-indigo-600" />
+                    </div>
+                    <div className="text-2xl sm:text-3xl font-black text-indigo-950 font-mono">
+                      {formatNumber(monthlyStatsData.totalMonthUnits)}
+                      <span className="text-xs font-normal text-indigo-800 ml-1">Tấm / Cái</span>
+                    </div>
+                    <p className="text-[11px] text-indigo-700 font-medium mt-1">
+                      Tổng khấu trừ do bán hàng
+                    </p>
+                  </div>
+
+                  <div className="bg-gradient-to-br from-purple-50 to-purple-100/60 border border-purple-200 rounded-2xl p-4 shadow-sm">
+                    <div className="flex items-center justify-between text-purple-800 mb-1">
+                      <span className="text-xs font-black uppercase tracking-wider">Đơn Bán Hàng Xuất Kho</span>
+                      <ShoppingBag className="w-4 h-4 text-purple-600" />
+                    </div>
+                    <div className="text-2xl sm:text-3xl font-black text-purple-950 font-mono">
+                      {monthlyStatsData.totalOrdersInMonth}
+                      <span className="text-xs font-normal text-purple-800 ml-1">đơn hàng</span>
+                    </div>
+                    <p className="text-[11px] text-purple-700 font-medium mt-1">
+                      Có trừ các vật tư đang theo dõi
+                    </p>
+                  </div>
+
+                  <div className="bg-gradient-to-br from-emerald-50 to-emerald-100/60 border border-emerald-200 rounded-2xl p-4 shadow-sm">
+                    <div className="flex items-center justify-between text-emerald-800 mb-1">
+                      <span className="text-xs font-black uppercase tracking-wider">Xuất Nhiều Nhất</span>
+                      <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                    </div>
+                    <div className="text-sm font-black text-emerald-950 truncate" title={monthlyStatsData.topItem ? monthlyStatsData.topItem.material.name : ''}>
+                      {monthlyStatsData.topItem && monthlyStatsData.topItem.exportedMonthQty > 0
+                        ? monthlyStatsData.topItem.material.name
+                        : 'Chưa có đơn xuất'}
+                    </div>
+                    <p className="text-xs font-black text-emerald-700 font-mono mt-1">
+                      {monthlyStatsData.topItem && monthlyStatsData.topItem.exportedMonthQty > 0
+                        ? `Đã xuất ${monthlyStatsData.topItem.exportedMonthQty} ${monthlyStatsData.topItem.material.unit}`
+                        : 'Trong Tháng ' + statsMonth + '/' + statsYear}
+                    </p>
+                  </div>
+                </div>
+
+                {/* BẢNG ĐỐI CHIẾU 12 THÁNG CẢ NĂM (MỞ RỘNG KHI BẤM XEM) */}
+                {showFullYearGrid && (
+                  <div className="bg-white rounded-2xl border border-indigo-200 shadow-sm overflow-hidden p-4 space-y-3 animate-fadeIn">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <PieChart className="w-4 h-4 text-indigo-600" />
+                        <h4 className="font-extrabold text-sm text-slate-800">
+                          Bảng Đối Chiếu Số Lượng Xuất 12 Tháng Năm {statsYear} (Tất Cả Vật Tư Cần Theo Dõi)
+                        </h4>
+                      </div>
+                      <span className="text-xs text-slate-500">
+                        (Cột Tháng {statsMonth} đang chọn được tô màu nổi bật)
+                      </span>
+                    </div>
+
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs text-left border-collapse">
+                        <thead>
+                          <tr className="bg-slate-100 text-slate-700 font-extrabold border-b border-slate-200">
+                            <th className="py-2.5 px-3">Mã Vật Tư</th>
+                            <th className="py-2.5 px-3">Tên Vật Liệu</th>
+                            <th className="py-2.5 px-2 text-center">ĐVT</th>
+                            {Array.from({ length: 12 }, (_, i) => i + 1).map(m => (
+                              <th
+                                key={m}
+                                className={`py-2.5 px-2 text-center font-mono ${
+                                  m === statsMonth ? 'bg-indigo-100 text-indigo-950 font-black' : ''
+                                }`}
+                              >
+                                T{m}
+                              </th>
+                            ))}
+                            <th className="py-2.5 px-3 text-center bg-amber-50 text-amber-950 font-black">
+                              Tổng {statsYear}
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 font-mono">
+                          {monthlyStatsData.allTrackedItems.map((it) => (
+                            <tr key={it.material.id} className="hover:bg-slate-50">
+                              <td className="py-2 px-3 font-bold text-slate-900">{it.material.code}</td>
+                              <td className="py-2 px-3 font-sans font-semibold text-slate-800 truncate max-w-[200px]" title={it.material.name}>
+                                {it.material.name}
+                              </td>
+                              <td className="py-2 px-2 text-center text-slate-500 font-sans">{it.material.unit}</td>
+                              {it.months12Data.map((qty, mIdx) => (
+                                <td
+                                  key={mIdx}
+                                  className={`py-2 px-2 text-center ${
+                                    mIdx + 1 === statsMonth ? 'bg-indigo-50/80 font-bold text-indigo-900' : ''
+                                  } ${qty > 0 ? 'text-indigo-700 font-bold' : 'text-slate-300'}`}
+                                >
+                                  {qty > 0 ? qty : '—'}
+                                </td>
+                              ))}
+                              <td className="py-2 px-3 text-center bg-amber-50/50 font-black text-amber-900">
+                                {it.yearTotal}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {/* BẢNG CHÍNH: CHI TIẾT SỐ LƯỢNG XUẤT TRONG THÁNG ĐANG CHỌN */}
+                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                  <div className="p-3.5 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex items-center gap-2">
+                      <span className="font-extrabold text-sm text-slate-800">
+                        Bảng Số Lượng Ván / Fomex Đã Xuất Trong Tháng {statsMonth}/{statsYear}
+                      </span>
+                      <span className="px-2 py-0.5 rounded-full text-xs font-bold bg-indigo-100 text-indigo-800 border border-indigo-200">
+                        {monthlyStatsData.items.length} mặt hàng
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <div className="relative w-56 sm:w-64">
+                        <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                        <input
+                          type="text"
+                          value={statsSearchQuery}
+                          onChange={(e) => setStatsSearchQuery(e.target.value)}
+                          placeholder="Tìm kiếm trong danh sách theo dõi..."
+                          className="w-full pl-8 pr-3 py-1 bg-white border border-slate-200 rounded-lg text-xs focus:border-indigo-500 outline-none"
+                        />
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveSubTab('inventory');
+                          setStatusFilter('tracked');
+                        }}
+                        className="px-3 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 rounded-lg text-xs font-bold transition cursor-pointer flex items-center gap-1 shrink-0"
+                        title="Sang danh sách kho để thêm hoặc bớt vật tư cần theo dõi"
+                      >
+                        <Star className="w-3 h-3 fill-amber-400 text-amber-500" />
+                        <span>Quản Lý ⭐ ({trackedMaterials.length})</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs border-collapse">
+                      <thead>
+                        <tr className="bg-slate-100 text-slate-700 font-extrabold border-b border-slate-200">
+                          <th className="py-3 px-3 w-12 text-center">STT</th>
+                          <th className="py-3 px-3 w-36">Mã Vật Tư</th>
+                          <th className="py-3 px-3">Tên Vật Liệu & Quy Cách</th>
+                          <th className="py-3 px-3 w-28">Nhóm</th>
+                          <th className="py-3 px-2 w-16 text-center">ĐVT</th>
+                          <th className="py-3 px-3 w-32 text-center">Tồn Kho Hiện Tại</th>
+                          <th className="py-3 px-3 w-44 text-center bg-indigo-50/80 text-indigo-950 font-black border-x border-indigo-200">
+                            Đã Xuất Tháng {statsMonth}/{statsYear}
+                          </th>
+                          <th className="py-3 px-3 w-36 text-center">Số Lượt Đơn</th>
+                          <th className="py-3 px-3 w-36 text-center">Chi Tiết Đơn Xuất</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {monthlyStatsData.items.length === 0 ? (
+                          <tr>
+                            <td colSpan={9} className="py-12 text-center text-slate-400">
+                              <Boxes className="w-8 h-8 mx-auto text-slate-300 mb-2" />
+                              <p className="font-semibold text-slate-600">Không tìm thấy vật tư phù hợp với từ khóa</p>
+                            </td>
+                          </tr>
+                        ) : (
+                          monthlyStatsData.items.map((it, idx) => {
+                            const mat = it.material;
+                            const isExpanded = expandedMaterialId === mat.id;
+                            const isLow = mat.stockQuantity > 0 && mat.stockQuantity <= mat.minStockAlert;
+                            const isOut = mat.stockQuantity <= 0;
+
+                            return (
+                              <React.Fragment key={mat.id}>
+                                <tr className={`hover:bg-slate-50/90 transition ${isExpanded ? 'bg-indigo-50/30' : ''}`}>
+                                  <td className="py-3 px-3 text-center text-slate-400 font-mono">{idx + 1}</td>
+                                  <td className="py-3 px-3 font-mono font-bold text-slate-900">
+                                    <div className="flex items-center gap-1.5">
+                                      <button
+                                        type="button"
+                                        onClick={() => handleToggleTrackedMaterial(mat)}
+                                        className="p-1 rounded-md hover:bg-amber-100/70 transition cursor-pointer group shrink-0"
+                                        title="Bấm để bỏ khỏi danh sách cần theo dõi"
+                                      >
+                                        <Star className="w-4 h-4 text-amber-500 fill-amber-400 drop-shadow-xs transition-transform group-hover:scale-125" />
+                                      </button>
+                                      <span>{mat.code}</span>
+                                    </div>
+                                  </td>
+                                  <td className="py-3 px-3">
+                                    <div className="font-bold text-slate-900 text-sm">{mat.name}</div>
+                                    {mat.supplier && (
+                                      <div className="text-[11px] text-slate-500 flex items-center gap-1 mt-0.5">
+                                        <Truck className="w-3 h-3 text-slate-400" />
+                                        <span>NCC: {mat.supplier}</span>
+                                      </div>
+                                    )}
+                                  </td>
+                                  <td className="py-3 px-3">
+                                    <span className="px-2 py-0.5 rounded-md text-[11px] font-semibold bg-slate-100 text-slate-700 border border-slate-200">
+                                      {mat.category}
+                                    </span>
+                                  </td>
+                                  <td className="py-3 px-2 text-center font-semibold text-slate-700">{mat.unit}</td>
+                                  <td className="py-3 px-3 text-center">
+                                    <span className={`font-mono font-bold ${
+                                      isOut ? 'text-slate-400' : isLow ? 'text-rose-600' : 'text-emerald-700'
+                                    }`}>
+                                      {formatNumber(mat.stockQuantity)} {mat.unit}
+                                    </span>
+                                  </td>
+                                  {/* CỘT TỔNG SL ĐÃ XUẤT TRONG THÁNG */}
+                                  <td className="py-3 px-3 text-center bg-indigo-50/40 border-x border-indigo-100">
+                                    {it.exportedMonthQty > 0 ? (
+                                      <div className="inline-flex items-center gap-1 px-3 py-1 rounded-xl bg-indigo-600 text-white font-mono font-black text-sm shadow-xs">
+                                        <span>-{it.exportedMonthQty}</span>
+                                        <span className="text-[11px] font-normal opacity-90">{mat.unit}</span>
+                                      </div>
+                                    ) : (
+                                      <span className="text-slate-400 font-mono text-xs">0 {mat.unit}</span>
+                                    )}
+                                  </td>
+                                  <td className="py-3 px-3 text-center font-mono">
+                                    {it.orderCount > 0 ? (
+                                      <span className="px-2 py-0.5 rounded-full text-xs font-bold bg-purple-100 text-purple-900 border border-purple-200">
+                                        {it.orderCount} đơn hàng
+                                      </span>
+                                    ) : (
+                                      <span className="text-slate-400">0 đơn</span>
+                                    )}
+                                  </td>
+                                  <td className="py-3 px-3 text-center">
+                                    {it.orderCount > 0 ? (
+                                      <button
+                                        type="button"
+                                        onClick={() => setExpandedMaterialId(isExpanded ? null : mat.id)}
+                                        className={`px-2.5 py-1 text-xs font-bold rounded-lg border transition cursor-pointer flex items-center gap-1 mx-auto ${
+                                          isExpanded
+                                            ? 'bg-indigo-600 text-white border-indigo-600 shadow-xs'
+                                            : 'bg-white hover:bg-slate-100 text-indigo-700 border-indigo-200'
+                                        }`}
+                                      >
+                                        <span>{isExpanded ? 'Đóng chi tiết' : 'Xem các đơn'}</span>
+                                        {isExpanded ? (
+                                          <ChevronUp className="w-3.5 h-3.5" />
+                                        ) : (
+                                          <ChevronDown className="w-3.5 h-3.5" />
+                                        )}
+                                      </button>
+                                    ) : (
+                                      <span className="text-slate-400 text-[11px]">Chưa phát sinh</span>
+                                    )}
+                                  </td>
+                                </tr>
+
+                                {/* ACCORDION CHI TIẾT TỪNG ĐƠN HÀNG TRONG THÁNG CHO VẬT TƯ NÀY */}
+                                {isExpanded && it.orderCount > 0 && (
+                                  <tr className="bg-indigo-50/40">
+                                    <td colSpan={9} className="p-4 border-b border-indigo-100">
+                                      <div className="bg-white rounded-xl border border-indigo-200 p-3 shadow-xs space-y-2">
+                                        <div className="flex items-center justify-between">
+                                          <span className="font-extrabold text-xs text-indigo-950 flex items-center gap-1.5">
+                                            <ShoppingBag className="w-3.5 h-3.5 text-indigo-600" />
+                                            Danh sách {it.orderCount} đơn hàng đã xuất trừ {mat.name} trong Tháng {statsMonth}/{statsYear}:
+                                          </span>
+                                          <span className="font-mono text-xs font-black text-indigo-700">
+                                            Tổng trừ: -{it.exportedMonthQty} {mat.unit}
+                                          </span>
+                                        </div>
+
+                                        <div className="overflow-x-auto">
+                                          <table className="w-full text-xs text-left border-collapse">
+                                            <thead>
+                                              <tr className="bg-slate-50 text-slate-600 font-bold border-b border-slate-200">
+                                                <th className="py-2 px-2.5">Mã Đơn</th>
+                                                <th className="py-2 px-2.5">Khách Hàng / Studio</th>
+                                                <th className="py-2 px-2.5 text-center">Ngày Trừ Kho</th>
+                                                <th className="py-2 px-2.5 text-center">Đợt Xuất</th>
+                                                <th className="py-2 px-2.5 text-right">Số Lượng Trừ</th>
+                                              </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-slate-100">
+                                              {it.orderOccurrences.map((ord, oIdx) => (
+                                                <tr key={oIdx} className="hover:bg-slate-50">
+                                                  <td className="py-2 px-2.5 font-mono font-bold text-slate-900">
+                                                    {ord.orderNumber}
+                                                  </td>
+                                                  <td className="py-2 px-2.5 font-semibold text-slate-800">
+                                                    {ord.customerName || 'Khách vãng lai'}
+                                                  </td>
+                                                  <td className="py-2 px-2.5 text-center font-mono text-slate-700">
+                                                    {formatDateVN(ord.date)}
+                                                  </td>
+                                                  <td className="py-2 px-2.5 text-center">
+                                                    {ord.isSupplement ? (
+                                                      <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-100 text-blue-800 border border-blue-200">
+                                                        ✨ Bổ sung
+                                                      </span>
+                                                    ) : (
+                                                      <span className="text-[10px] text-slate-500">Đơn gốc</span>
+                                                    )}
+                                                  </td>
+                                                  <td className="py-2 px-2.5 text-right font-mono font-black text-indigo-700">
+                                                    -{ord.quantity} {mat.unit}
+                                                  </td>
+                                                </tr>
+                                              ))}
+                                            </tbody>
+                                          </table>
+                                        </div>
+                                      </div>
+                                    </td>
+                                  </tr>
+                                )}
+                              </React.Fragment>
+                            );
+                          })
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    )}
 
       {/* SUB-TAB 5: THEO DÕI MỰC IN 12 MÀU (CANON LUCIA PRO) */}
       {activeSubTab === 'ink_tracking' && (

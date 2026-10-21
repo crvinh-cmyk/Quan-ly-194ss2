@@ -179,6 +179,7 @@ export interface Material {
   notes?: string;
   createdAt: string;
   updatedAt: string;
+  isTracked?: boolean; // Vật tư cần theo dõi (⭐)
   userId?: string;
   createdBy?: string;
 }
