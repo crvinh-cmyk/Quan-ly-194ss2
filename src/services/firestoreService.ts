@@ -10,7 +10,7 @@ import {
   runTransaction
 } from 'firebase/firestore';
 import { db } from '../firebase/config';
-import { Product, Customer, Order, Material, StockImportReceipt, StockImportItem, WorkshopInfo, StudioCombo, ProductCostItem, ProductCostMap, InkImportRecord, InkColorCode, S1aDayOverride, S1aManualEntry, BoardCorePriceRow, BoardCorePriceMap, AccessoryMaterialItem, AccessoryMaterialMap, PaperMaterialItem, PaperMaterialMap, ArchivedDeletedCustomerRevenue, MonthOtherExpenses, OtherExpensesMap } from '../types';
+import { Product, Customer, Order, Material, StockImportReceipt, StockImportItem, WorkshopInfo, StudioCombo, ProductCostItem, ProductCostMap, RetailProductCostItem, RetailProductCostMap, InkImportRecord, InkColorCode, S1aDayOverride, S1aManualEntry, BoardCorePriceRow, BoardCorePriceMap, AccessoryMaterialItem, AccessoryMaterialMap, PaperMaterialItem, PaperMaterialMap, ArchivedDeletedCustomerRevenue, MonthOtherExpenses, OtherExpensesMap } from '../types';
 import { DEFAULT_WORKSHOP_INFO, DEFAULT_INK_IMPORTS } from '../data/initialData';
 
 // User info interface for tagging created/updated records
@@ -1183,6 +1183,90 @@ export async function saveProductCostsToFirestore(
 }
 
 // =================================================================
+// 9.3 GIÁ VỐN NGUYÊN VẬT LIỆU CHO CÁC SẢN PHẨM KHÁCH LẺ
+// =================================================================
+const RETAIL_PRODUCT_COSTS_LOCAL_KEY = 'tiem_in_194_retail_product_costs_v1';
+
+export function getLocalRetailProductCosts(): RetailProductCostMap {
+  try {
+    const raw = localStorage.getItem(RETAIL_PRODUCT_COSTS_LOCAL_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch (e) {
+    console.error('Error reading local retail product costs:', e);
+    return {};
+  }
+}
+
+export function saveLocalRetailProductCosts(data: RetailProductCostMap): void {
+  try {
+    localStorage.setItem(RETAIL_PRODUCT_COSTS_LOCAL_KEY, JSON.stringify(data));
+  } catch (e) {
+    console.error('Error saving local retail product costs:', e);
+  }
+}
+
+export function subscribeRetailProductCosts(
+  callback: (costs: RetailProductCostMap) => void,
+  onError?: (error: Error) => void
+): () => void {
+  const docRef = doc(db, COLLECTIONS.SETTINGS, 'retail_product_costs');
+  return onSnapshot(
+    docRef,
+    (snapshot) => {
+      if (snapshot.exists()) {
+        const raw = snapshot.data();
+        let costs: RetailProductCostMap = {};
+        if (raw.costs && typeof raw.costs === 'object') {
+          costs = raw.costs as RetailProductCostMap;
+        } else {
+          Object.entries(raw).forEach(([code, val]) => {
+            if (code !== 'updatedAt' && code !== 'userId' && code !== 'createdBy' && typeof val === 'object' && val !== null) {
+              const item = val as any;
+              costs[code] = {
+                code: item.code || code,
+                name: item.name || '',
+                size: item.size || '',
+                materialCost: Number(item.materialCost) || 0,
+                unitPrice: item.unitPrice ? Number(item.unitPrice) : undefined,
+                notes: item.notes || undefined,
+                updatedAt: item.updatedAt || undefined,
+              };
+            }
+          });
+        }
+        saveLocalRetailProductCosts(costs);
+        callback(costs);
+      } else {
+        const local = getLocalRetailProductCosts();
+        callback(local);
+      }
+    },
+    (err) => {
+      console.error('Error subscribing to retail product costs:', err);
+      const local = getLocalRetailProductCosts();
+      callback(local);
+      if (onError) onError(err);
+    }
+  );
+}
+
+export async function saveRetailProductCostsToFirestore(
+  costs: RetailProductCostMap,
+  user?: AuthUserContext | null
+): Promise<void> {
+  saveLocalRetailProductCosts(costs);
+  const docRef = doc(db, COLLECTIONS.SETTINGS, 'retail_product_costs');
+  const payload = {
+    costs,
+    updatedAt: new Date().toISOString()
+  };
+  const enriched = attachUserInfo(payload, user);
+  await setDoc(docRef, cleanFirestoreObject(enriched), { merge: true });
+}
+
+// =================================================================
 // 9.1 BẢNG GIÁ CỐT VẬT TƯ (VÁN MDF 9LI, VÁN MDF 12LI, FOMEX 9LI)
 // =================================================================
 export const DEFAULT_BOARD_CORE_PRICES: BoardCorePriceMap = {
@@ -2043,5 +2127,3 @@ export async function saveOtherExpensesToFirestore(
     console.error('Error saving other expenses to Firestore:', e);
   }
 }
-
-

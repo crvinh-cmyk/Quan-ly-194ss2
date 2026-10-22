@@ -259,6 +259,21 @@ export interface ProductCostItem {
 
 export type ProductCostMap = Record<string, ProductCostItem>;
 
+/**
+ * Giá vốn nguyên vật liệu cho các sản phẩm khách lẻ
+ */
+export interface RetailProductCostItem {
+  code: string;         // Mã sản phẩm (VD: 'INKL1015', 'MKKL6090'...)
+  name: string;         // Tên hàng hóa
+  size: string;         // Kích thước (VD: '10*15', '60*90'...)
+  materialCost: number; // Giá nguyên vật liệu (VNĐ) nhập vào
+  unitPrice?: number;   // Giá bán khách lẻ niêm yết (tham khảo)
+  notes?: string;       // Ghi chú nếu có
+  updatedAt?: string;   // Ngày giờ cập nhật gần nhất
+}
+
+export type RetailProductCostMap = Record<string, RetailProductCostItem>;
+
 // =================================================================
 // BẢNG GIÁ CỐT VẬT TƯ (VÁN MDF 9LI, VÁN MDF 12LI, FOMEX 9LI)
 // =================================================================

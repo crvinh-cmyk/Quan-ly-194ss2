@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { Order, OrderItem, MaterialDeduction, Product, StockImportReceipt, Customer, ProductCostMap, BoardCorePriceMap, ArchivedDeletedCustomerRevenue, MonthOtherExpenses, OtherExpensesMap } from '../types';
+import { Order, OrderItem, MaterialDeduction, Product, StockImportReceipt, Customer, ProductCostMap, BoardCorePriceMap, ArchivedDeletedCustomerRevenue, MonthOtherExpenses, OtherExpensesMap, RetailProductCostMap } from '../types';
 import { formatCurrency } from '../utils/formatters';
 import { isPartnerMode, getDisplayPrice } from '../utils/partnerConfig';
 import {
@@ -9,6 +9,7 @@ import {
   Wallet, Receipt, Home, Zap, Droplets, Users, Copy, Check
 } from 'lucide-react';
 import { ProductCostAnalyticsTable, computeProductCostLookupMap } from './ProductCostAnalyticsTable';
+import { convertProductCodeForTier } from '../utils/productHelpers';
 import {
   subscribeRevenueDeductions,
   saveRevenueDeductionsToFirestore,
@@ -19,7 +20,9 @@ import {
   getLocalBoardCorePrices,
   subscribeOtherExpenses,
   saveOtherExpensesToFirestore,
-  getLocalOtherExpenses
+  getLocalOtherExpenses,
+  subscribeRetailProductCosts,
+  getLocalRetailProductCosts
 } from '../services/firestoreService';
 
 interface AnalyticsViewProps {
@@ -126,33 +129,105 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
   // Dữ liệu đơn giá vốn định mức sản phẩm từ "Bảng Thống Kê Định Mức Giá Vốn" & "Bảng Giá Cốt Vật Tư"
   const [costMap, setCostMap] = useState<ProductCostMap>(() => getLocalProductCosts());
   const [boardCorePrices, setBoardCorePrices] = useState<BoardCorePriceMap>(() => getLocalBoardCorePrices());
+  // Bảng giá vốn nguyên vật liệu cho các sản phẩm khách lẻ
+  const [retailCostMap, setRetailCostMap] = useState<RetailProductCostMap>(() => getLocalRetailProductCosts());
 
   useEffect(() => {
     const unsubCosts = subscribeProductCosts((data) => setCostMap(data || {}));
     const unsubCore = subscribeBoardCorePrices((data) => setBoardCorePrices(data || {}));
+    const unsubRetail = subscribeRetailProductCosts((data) => setRetailCostMap(data || {}));
     return () => {
       if (typeof unsubCosts === 'function') unsubCosts();
       if (typeof unsubCore === 'function') unsubCore();
+      if (typeof unsubRetail === 'function') unsubRetail();
     };
   }, []);
 
-  // Map đơn giá vốn định mức cho tất cả các mã sản phẩm
+  // Map đơn giá vốn định mức cho tất cả các mã sản phẩm (Bảng 1 & Bảng 2)
   const productCostLookup = useMemo(() => {
     return computeProductCostLookupMap(costMap, boardCorePrices, products);
   }, [costMap, boardCorePrices, products]);
 
+  // Tra cứu loại khách hàng theo ID
+  const customerTypeMap = useMemo(() => {
+    const map = new Map<string, string>();
+    customers.forEach(c => {
+      if (c.customerType) map.set(c.id, c.customerType);
+    });
+    return map;
+  }, [customers]);
+
+  // Kiểm tra đơn hàng có phải đơn bán hàng khách lẻ hay không
+  const isRetailInvoice = (order?: Order): boolean => {
+    if (!order) return false;
+    if (order.customerId) {
+      const cType = customerTypeMap.get(order.customerId);
+      if (cType === 'Khách Lẻ') return true;
+    }
+    const cName = (order.customerName || '').toLowerCase();
+    if (cName.includes('khách lẻ') || cName.includes('khach le') || cName.includes('vãng lai') || cName.includes('vang lai')) {
+      return true;
+    }
+    return false;
+  };
+
   // Tính chi phí nguyên vật liệu định mức cho 1 dòng sản phẩm bán ra
-  const getItemMaterialCost = (it: OrderItem): number => {
-    const codeKey = (it.productCode || '').trim().toUpperCase();
+  // - Khách Lẻ: Tự động tra cứu trong Bảng Giá Vốn NVL Cho Các Sản Phẩm Khách Lẻ (Bảng 3)
+  // - Khách Freelance / Studio / Khách khác: Tự động lấy số liệu tại Bảng 1 ("Bảng Thống Kê Định Mức Giá Vốn & Tỷ Suất LNG") và Bảng 2 ("Bảng Sản Phẩm Nhập Thành Phẩm & Định Mức Tùy Chỉnh").
+  //   Lý do: Khách Studio và Khách Freelance dùng chung tên/quy cách sản phẩm vật lý nên Giá vốn nhập / Tổng giá vốn / Chi phí nguyên vật liệu (VNĐ) là như nhau.
+  const getItemMaterialCost = (it: OrderItem, order?: Order): number => {
+    const rawCode = (it.productCode || '').trim();
+    const codeKey = rawCode.toUpperCase();
+    const isRetail = isRetailInvoice(order) || codeKey.includes('KL') || codeKey.startsWith('INKL') || codeKey.startsWith('INEPKL') || codeKey.startsWith('LVKL') || codeKey.startsWith('MKKL') || codeKey.startsWith('HDKL');
+
+    // 1. Đơn hàng Khách Lẻ -> Ưu tiên Bảng Giá Vốn Nguyên Vật Liệu Khách Lẻ (Bảng 3)
+    if (isRetail) {
+      const retailEntry = retailCostMap[codeKey] || Object.values(retailCostMap).find(r => r.code.toUpperCase() === codeKey);
+      if (retailEntry && retailEntry.materialCost > 0) {
+        return (it.quantity || 0) * retailEntry.materialCost;
+      }
+    }
+
+    // 2. Đơn Freelance / Studio / Khách khác -> Tra cứu Bảng 1 & Bảng 2
     let unitCost = productCostLookup[codeKey];
 
-    if (unitCost === undefined) {
-      const matched = products.find(p => p.code.toUpperCase() === codeKey);
-      if (matched && productCostLookup[matched.code.toUpperCase()] !== undefined) {
-        unitCost = productCostLookup[matched.code.toUpperCase()];
-      } else {
-        unitCost = 0;
+    // Chuyển đổi mã Freelance sang mã Studio tương ứng nếu tra trực tiếp chưa thấy (VD: 'LVFL6090' -> 'LVST6090', 'MKFL20*30' -> 'MKST20*30')
+    if (unitCost === undefined || unitCost === 0) {
+      const studioCodeKey = convertProductCodeForTier(rawCode, 'GIÁ STUDIO').toUpperCase();
+      if (productCostLookup[studioCodeKey] !== undefined && productCostLookup[studioCodeKey] > 0) {
+        unitCost = productCostLookup[studioCodeKey];
       }
+    }
+
+    // Nếu vẫn chưa tìm thấy, khớp theo sản phẩm trong danh mục:
+    if (unitCost === undefined || unitCost === 0) {
+      const matched = products.find(p => p.code.toUpperCase() === codeKey);
+      if (matched) {
+        const matchedCodeKey = matched.code.toUpperCase();
+        if (productCostLookup[matchedCodeKey] !== undefined && productCostLookup[matchedCodeKey] > 0) {
+          unitCost = productCostLookup[matchedCodeKey];
+        } else {
+          // Tìm sản phẩm Studio tương đương trong danh mục (cùng kích thước và cùng tên sản phẩm gốc)
+          const cleanName = matched.name.replace(/\((GIÁ STUDIO|Freelance|Khách Lẻ)\)/gi, '').trim();
+          const studioEquivalent = products.find(p =>
+            p.category === 'GIÁ STUDIO' &&
+            p.size === matched.size &&
+            p.name.replace(/\((GIÁ STUDIO|Freelance|Khách Lẻ)\)/gi, '').trim() === cleanName
+          );
+          if (studioEquivalent) {
+            const equivCodeKey = studioEquivalent.code.toUpperCase();
+            if (productCostLookup[equivCodeKey] !== undefined && productCostLookup[equivCodeKey] > 0) {
+              unitCost = productCostLookup[equivCodeKey];
+            }
+          }
+        }
+      }
+    }
+
+    // Fallback cho đơn hàng Khách Lẻ chưa nhập giá ở Bảng 3
+    if ((unitCost === undefined || unitCost === 0) && isRetail) {
+      const studioCodeKey = convertProductCodeForTier(rawCode, 'GIÁ STUDIO').toUpperCase();
+      unitCost = productCostLookup[studioCodeKey] || 0;
     }
 
     return (it.quantity || 0) * (unitCost || 0);
@@ -337,7 +412,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
             if (mIdx >= 0 && mIdx < 12) {
               const itAmt = (it.amount !== undefined ? it.amount : (it.quantity * (it.price || 0))) || 0;
               months[mIdx].revenue += Math.round(itAmt * ratio);
-              months[mIdx].materialCost += getItemMaterialCost(it);
+              months[mIdx].materialCost += getItemMaterialCost(it, o);
               if (!countedMonthsForOrder.has(mIdx)) {
                 months[mIdx].ordersCount += 1;
                 countedMonthsForOrder.add(mIdx);
@@ -356,7 +431,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
     });
 
     return months;
-  }, [orders, selectedYear, revenueDeductions, otherExpenses, productCostLookup, products]);
+  }, [orders, selectedYear, revenueDeductions, otherExpenses, productCostLookup, products, retailCostMap, customers]);
 
   // Tổng số liệu cả năm
   const totalYearGrossOrdersRevenue = useMemo(() => {
@@ -508,7 +583,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
             if (itDate === dateStr) {
               const itAmt = (it.amount !== undefined ? it.amount : (it.quantity * (it.price || 0))) || 0;
               dayRevenue += Math.round(itAmt * ratio);
-              dayMaterialCost += getItemMaterialCost(it);
+              dayMaterialCost += getItemMaterialCost(it, o);
               hasItemOnThisDay = true;
             }
           });
@@ -567,7 +642,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
       avgDailyRevenue,
       avgPerActiveDay
     };
-  }, [orders, selectedYear, dailyMonth, currentRealDayStr, productCostLookup, products]);
+  }, [orders, selectedYear, dailyMonth, currentRealDayStr, productCostLookup, products, retailCostMap, customers]);
 
   // ==========================================
   // SO SÁNH & TĂNG TRƯỜNG CÙNG KỲ (YoY) NĂM CHỌN VS NĂM TRƯỚC
@@ -638,7 +713,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
             if (mIdx >= 0 && mIdx < 12) {
               const itAmt = (it.amount !== undefined ? it.amount : (it.quantity * (it.price || 0))) || 0;
               prevMonths[mIdx].revenue += Math.round(itAmt * ratio);
-              prevMonths[mIdx].materialCost += getItemMaterialCost(it);
+              prevMonths[mIdx].materialCost += getItemMaterialCost(it, o);
             }
           }
         });
@@ -702,7 +777,7 @@ export const AnalyticsView: React.FC<AnalyticsViewProps> = ({
     };
 
     return { rows, yearTotals };
-  }, [monthlyData, selectedYear, prevYear, revenueDeductions, otherExpenses, orders, productCostLookup, products]);
+  }, [monthlyData, selectedYear, prevYear, revenueDeductions, otherExpenses, orders, productCostLookup, products, retailCostMap, customers]);
 
   const handleConfirmReset = () => {
     if (onResetYearData) {

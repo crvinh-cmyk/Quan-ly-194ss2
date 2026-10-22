@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Product, ProductCostItem, ProductCostMap, BoardCorePriceMap, CoreBoardCategory } from '../types';
+import { Product, ProductCostItem, ProductCostMap, BoardCorePriceMap, CoreBoardCategory, RetailProductCostItem, RetailProductCostMap } from '../types';
 import { formatCurrency, formatNumber } from '../utils/formatters';
 import { isPartnerMode } from '../utils/partnerConfig';
+import { convertProductCodeForTier } from '../utils/productHelpers';
 import {
   DollarSign, TrendingUp, Calculator, Save, Printer, Download,
   Search, FileText, Sparkles, CheckCircle2, Layers, PieChart,
   RefreshCw, Check, Percent, ArrowUpRight, ArrowDownRight, Info,
-  Filter, Eye, Table2, Plus, Trash2, Pencil, X
+  Filter, Eye, Table2, Plus, Trash2, Pencil, X, User, Clipboard, ClipboardPaste
 } from 'lucide-react';
 import {
   subscribeProductCosts,
@@ -15,7 +16,10 @@ import {
   saveLocalProductCosts,
   subscribeBoardCorePrices,
   getLocalBoardCorePrices,
-  DEFAULT_BOARD_CORE_PRICES
+  DEFAULT_BOARD_CORE_PRICES,
+  subscribeRetailProductCosts,
+  saveRetailProductCostsToFirestore,
+  getLocalRetailProductCosts
 } from '../services/firestoreService';
 
 /**
@@ -941,10 +945,30 @@ export function computeProductCostLookupMap(
       Number(resolvedFrame || 0) +
       Number(resolvedOther || 0);
 
-    result[code.toUpperCase()] = totalCost;
+    const mainKey = code.toUpperCase();
+    result[mainKey] = totalCost;
+
+    // Tự động map thêm mã Freelance tương ứng (vì sản phẩm Studio và Freelance dùng chung vật tư & giá vốn)
+    const flCode = convertProductCodeForTier(code, 'Freelance').toUpperCase();
+    result[flCode] = totalCost;
+
+    // Map thêm định dạng bỏ dấu '*' (ví dụ LVST6090 <-> LVST60*90, LVFL6090 <-> LVFL60*90)
+    const cleanMainKey = mainKey.replace('*', '');
+    result[cleanMainKey] = totalCost;
+
+    const cleanFlCode = flCode.replace('*', '');
+    result[cleanFlCode] = totalCost;
   });
 
   return result;
+}
+
+export function getMarginBadge(margin: number, hasPrice: boolean): string {
+  if (!hasPrice) return 'bg-slate-100 text-slate-400 border-slate-200';
+  if (margin >= 40) return 'bg-emerald-50 text-emerald-800 border-emerald-300 font-bold';
+  if (margin >= 20) return 'bg-amber-50 text-amber-900 border-amber-300 font-bold';
+  if (margin > 0) return 'bg-yellow-50 text-yellow-900 border-yellow-300 font-bold';
+  return 'bg-rose-50 text-rose-800 border-rose-300 font-bold';
 }
 
 interface ProductCostAnalyticsTableProps {
@@ -958,12 +982,18 @@ export const ProductCostAnalyticsTable: React.FC<ProductCostAnalyticsTableProps>
 }) => {
   const [costMap, setCostMap] = useState<ProductCostMap>(() => getLocalProductCosts());
   const [boardCorePrices, setBoardCorePrices] = useState<BoardCorePriceMap>(() => getLocalBoardCorePrices());
-  const [activeCostTab, setActiveCostTab] = useState<'dissected' | 'imported'>('dissected');
+  const [activeCostTab, setActiveCostTab] = useState<'dissected' | 'imported' | 'retail'>('dissected');
   const [searchQuery, setSearchQuery] = useState('');
   const [filterStatus, setFilterStatus] = useState<'all' | 'filled' | 'empty'>('all');
   const [isSaving, setIsSaving] = useState(false);
   const [toastMessage, setToastMessage] = useState('');
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Bảng Giá Vốn Nguyên Vật Liệu Cho Các Sản Phẩm Khách Lẻ
+  const [retailCostMap, setRetailCostMap] = useState<RetailProductCostMap>(() => getLocalRetailProductCosts());
+  const [retailPasteText, setRetailPasteText] = useState('');
+  const [retailSearchQuery, setRetailSearchQuery] = useState('');
+  const [retailFilterStatus, setRetailFilterStatus] = useState<'all' | 'priced' | 'unpriced'>('all');
 
   // Quản lý sản phẩm nhập thành phẩm tự định nghĩa (Thêm/Sửa/Xóa)
   const [customImportedItems, setCustomImportedItems] = useState<Array<{
@@ -1161,6 +1191,218 @@ export const ProductCostAnalyticsTable: React.FC<ProductCostAnalyticsTableProps>
   const showToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(''), 3000);
+  };
+
+  // Subscribe to real-time updates from Firestore for Retail Product Costs
+  useEffect(() => {
+    const unsubscribeRetail = subscribeRetailProductCosts(
+      (newRetailCosts) => {
+        setRetailCostMap(newRetailCosts || {});
+      },
+      (error) => {
+        console.error('Error subscribing to retail product costs:', error);
+      }
+    );
+    return () => unsubscribeRetail();
+  }, []);
+
+  // Đọc nội dung từ Clipboard hoặc fallback LocalStorage
+  const handlePasteFromClipboard = async () => {
+    try {
+      let text = '';
+      if (navigator?.clipboard?.readText) {
+        text = await navigator.clipboard.readText();
+      }
+      if (!text) {
+        text = localStorage.getItem('copied_retail_products_text') ||
+               localStorage.getItem('tiem_in_194_copied_retail_products_text') || '';
+      }
+      if (text && text.trim()) {
+        setRetailPasteText(text.trim());
+        showToast('Đã dán dữ liệu vào ô! Bấm "✅ Thêm / Cập Nhật Vào Danh Sách" để lưu.');
+      } else {
+        alert('Bộ nhớ tạm hiện đang trống. Hãy qua tab "Bảng giá mã sản phẩm" -> "Khách Lẻ" rồi bấm nút "Copy Mã, Tên & Kích thước Khách Lẻ" trước nhé!');
+      }
+    } catch (e) {
+      const fallback = localStorage.getItem('copied_retail_products_text') ||
+                       localStorage.getItem('tiem_in_194_copied_retail_products_text') || '';
+      if (fallback && fallback.trim()) {
+        setRetailPasteText(fallback.trim());
+        showToast('Đã nạp dữ liệu đã sao chép từ bộ nhớ!');
+      } else {
+        alert('Vui lòng nhấn phím Ctrl+V (hoặc Command+V) trực tiếp vào ô dán để dán dữ liệu.');
+      }
+    }
+  };
+
+  // Nạp 1-click toàn bộ mã Khách Lẻ từ Bảng Giá Sản Phẩm
+  const handleAutoPopulateFromRetailCatalog = async () => {
+    if (isPartnerMode()) return;
+    const retailProducts = products.filter(p => p.category === 'Khách Lẻ' || p.code.toUpperCase().includes('KL'));
+    if (retailProducts.length === 0) {
+      alert('Không tìm thấy sản phẩm nào thuộc bảng Khách Lẻ trong Bảng Giá Sản Phẩm!');
+      return;
+    }
+
+    const nextMap = { ...retailCostMap };
+    let addedCount = 0;
+    let updatedCount = 0;
+
+    retailProducts.forEach(p => {
+      const codeKey = p.code.toUpperCase().trim();
+      const existing = nextMap[codeKey];
+      if (existing) {
+        nextMap[codeKey] = {
+          ...existing,
+          name: p.name || existing.name,
+          size: p.size || existing.size,
+          unitPrice: p.price > 0 ? p.price : existing.unitPrice,
+          updatedAt: new Date().toISOString()
+        };
+        updatedCount++;
+      } else {
+        nextMap[codeKey] = {
+          code: p.code,
+          name: p.name,
+          size: p.size || '',
+          unitPrice: p.price || 0,
+          materialCost: 0,
+          updatedAt: new Date().toISOString()
+        };
+        addedCount++;
+      }
+    });
+
+    setRetailCostMap(nextMap);
+    await saveRetailProductCostsToFirestore(nextMap, { email: currentUserEmail });
+    showToast(`Đã nạp ${retailProducts.length} mã Khách Lẻ (+${addedCount} mã mới, đồng bộ ${updatedCount} mã)!`);
+  };
+
+  // Phân tích và lưu dữ liệu dán vào bảng giá vốn Khách Lẻ
+  const handleParseAndImportRetailText = async () => {
+    if (isPartnerMode()) return;
+    if (!retailPasteText.trim()) {
+      alert('Vui lòng dán nội dung vào ô trước khi bấm "Thêm / Cập Nhật"!');
+      return;
+    }
+
+    const lines = retailPasteText.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    if (lines.length === 0) {
+      alert('Không tìm thấy dòng dữ liệu nào hợp lệ!');
+      return;
+    }
+
+    const nextMap = { ...retailCostMap };
+    let importedCount = 0;
+
+    lines.forEach(line => {
+      let parts = line.split('\t');
+      if (parts.length === 1 && line.includes(',')) {
+        parts = line.split(',');
+      } else if (parts.length === 1 && line.includes('|')) {
+        parts = line.split('|');
+      }
+
+      const rawCode = (parts[0] || '').trim();
+      if (!rawCode) return;
+      const codeKey = rawCode.toUpperCase();
+      const existing = nextMap[codeKey];
+
+      const rawName = (parts[1] || '').trim();
+      const rawSize = (parts[2] || '').trim();
+      const rawNum = parts[3] ? Number(parts[3].replace(/[^\d.-]/g, '')) || 0 : 0;
+
+      const matchedProd = products.find(p => p.code.toUpperCase() === codeKey);
+      const name = rawName || existing?.name || matchedProd?.name || rawCode;
+      const size = rawSize || existing?.size || matchedProd?.size || '';
+      const unitPrice = (matchedProd?.price && matchedProd.price > 0)
+        ? matchedProd.price
+        : (existing?.unitPrice && existing.unitPrice > 0)
+          ? existing.unitPrice
+          : rawNum > 0 ? rawNum : 0;
+
+      nextMap[codeKey] = {
+        code: rawCode,
+        name,
+        size,
+        unitPrice,
+        materialCost: existing?.materialCost !== undefined ? existing.materialCost : 0,
+        updatedAt: new Date().toISOString()
+      };
+      importedCount++;
+    });
+
+    setRetailCostMap(nextMap);
+    await saveRetailProductCostsToFirestore(nextMap, { email: currentUserEmail });
+    setRetailPasteText('');
+    showToast(`Đã thêm thành công ${importedCount} mã Khách Lẻ vào bảng! Hãy nhập 'Giá Nguyên Vật Liệu' tương ứng.`);
+  };
+
+  // Cập nhật từng ô Giá nguyên vật liệu cho sản phẩm Khách Lẻ
+  const handleUpdateRetailCostItem = (codeKey: string, field: 'materialCost' | 'unitPrice' | 'notes', rawVal: any) => {
+    if (isPartnerMode()) return;
+    const key = codeKey.toUpperCase().trim();
+    const existing = retailCostMap[key] || {
+      code: codeKey,
+      name: '',
+      size: '',
+      materialCost: 0
+    };
+
+    let updatedValue: any = rawVal;
+    if (field === 'materialCost' || field === 'unitPrice') {
+      const num = typeof rawVal === 'string' ? Number(rawVal.replace(/[^\d]/g, '')) || 0 : Number(rawVal) || 0;
+      updatedValue = Math.max(0, num);
+    }
+
+    const updatedItem: RetailProductCostItem = {
+      ...existing,
+      [field]: updatedValue,
+      updatedAt: new Date().toISOString()
+    };
+
+    const nextMap: RetailProductCostMap = {
+      ...retailCostMap,
+      [key]: updatedItem
+    };
+
+    setRetailCostMap(nextMap);
+
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
+    }
+    saveTimeoutRef.current = setTimeout(() => {
+      saveRetailProductCostsToFirestore(nextMap, { email: currentUserEmail }).catch(console.error);
+    }, 700);
+  };
+
+  // Xóa mã sản phẩm khỏi Bảng Giá Vốn Khách Lẻ
+  const handleDeleteRetailItem = (codeKey: string, name: string) => {
+    if (isPartnerMode()) return;
+    if (!window.confirm(`Bạn có chắc chắn muốn xóa mã "${codeKey}" (${name}) khỏi Bảng Giá Vốn Khách Lẻ?`)) {
+      return;
+    }
+    const key = codeKey.toUpperCase().trim();
+    const nextMap = { ...retailCostMap };
+    delete nextMap[key];
+    setRetailCostMap(nextMap);
+    saveRetailProductCostsToFirestore(nextMap, { email: currentUserEmail }).catch(console.error);
+    showToast(`Đã xóa mã "${codeKey}" khỏi bảng Giá Vốn Khách Lẻ.`);
+  };
+
+  // Nút Lưu Toàn Bộ Bảng Khách Lẻ Lên Cloud
+  const handleSaveAllRetailCosts = async () => {
+    if (isPartnerMode()) return;
+    setIsSaving(true);
+    try {
+      await saveRetailProductCostsToFirestore(retailCostMap, { email: currentUserEmail });
+      showToast('Đã lưu thành công toàn bộ Bảng Giá Vốn Khách Lẻ lên Cloud Firestore!');
+    } catch (e) {
+      console.error('Error saving retail costs:', e);
+      showToast('Lỗi khi lưu bảng giá vốn khách lẻ!');
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   // Helper to find or infer product info from the catalog
@@ -1705,6 +1947,69 @@ export const ProductCostAnalyticsTable: React.FC<ProductCostAnalyticsTableProps>
     };
   }, [dissectedRows]);
 
+  // 3. Bảng Giá Vốn Nguyên Vật Liệu Cho Các Sản Phẩm Khách Lẻ
+  const retailRows = useMemo(() => {
+    const list = Object.values(retailCostMap).map(item => {
+      const matched = products.find(p => p.code.toUpperCase() === item.code.toUpperCase());
+      const unitPrice = (item.unitPrice !== undefined && item.unitPrice > 0)
+        ? item.unitPrice
+        : (matched?.price || 0);
+      const materialCost = item.materialCost || 0;
+      const grossProfit = unitPrice > 0 ? unitPrice - materialCost : 0;
+      const marginOnPrice = unitPrice > 0 ? Math.round(((grossProfit / unitPrice) * 100) * 10) / 10 : 0;
+      const isPriced = materialCost > 0;
+
+      return {
+        ...item,
+        unitPrice,
+        materialCost,
+        grossProfit,
+        marginOnPrice,
+        isPriced
+      };
+    });
+
+    return list.filter(r => {
+      const query = (retailSearchQuery || searchQuery).toLowerCase().trim();
+      if (query) {
+        const matchCode = r.code.toLowerCase().includes(query);
+        const matchName = r.name.toLowerCase().includes(query);
+        const matchSize = (r.size || '').toLowerCase().includes(query);
+        if (!matchCode && !matchName && !matchSize) return false;
+      }
+      if (retailFilterStatus === 'priced' && !r.isPriced) return false;
+      if (retailFilterStatus === 'unpriced' && r.isPriced) return false;
+      return true;
+    }).sort((a, b) => {
+      const scoreA = parsePhotoSizeScore(a.size);
+      const scoreB = parsePhotoSizeScore(b.size);
+      if (scoreA !== scoreB) return scoreA - scoreB;
+      return a.code.localeCompare(b.code);
+    }).map((item, idx) => ({ ...item, stt: idx + 1 }));
+  }, [retailCostMap, products, retailSearchQuery, searchQuery, retailFilterStatus]);
+
+  const retailStats = useMemo(() => {
+    const all = Object.values(retailCostMap);
+    const total = all.length;
+    const priced = all.filter(r => (r.materialCost || 0) > 0).length;
+    const unpriced = total - priced;
+    const pricedWithSale = all.filter(r => {
+      const matched = products.find(p => p.code.toUpperCase() === r.code.toUpperCase());
+      const p = (r.unitPrice !== undefined && r.unitPrice > 0) ? r.unitPrice : (matched?.price || 0);
+      return p > 0 && (r.materialCost || 0) > 0;
+    });
+    const avgMargin = pricedWithSale.length > 0
+      ? pricedWithSale.reduce((sum, r) => {
+          const matched = products.find(p => p.code.toUpperCase() === r.code.toUpperCase());
+          const p = (r.unitPrice !== undefined && r.unitPrice > 0) ? r.unitPrice : (matched?.price || 0);
+          const gp = p - (r.materialCost || 0);
+          return sum + ((gp / p) * 100);
+        }, 0) / pricedWithSale.length
+      : 0;
+
+    return { total, priced, unpriced, avgMargin: Math.round(avgMargin * 10) / 10 };
+  }, [retailCostMap, products]);
+
   // Handle cell input change with auto-fill & synchronization according to rules
   const handleCostChange = (code: string, field: keyof ProductCostItem, rawVal: string) => {
     if (isPartnerMode()) return; // Chế độ đối tác chỉ xem báo cáo giá thành & lời lãi, không sửa giá vốn gốc
@@ -2050,6 +2355,19 @@ export const ProductCostAnalyticsTable: React.FC<ProductCostAnalyticsTableProps>
           <Layers className="w-4 h-4" />
           <span>Bảng 2: Sản Phẩm Nhập Thành Phẩm & Định Mức Tùy Chỉnh ({importedCustomRows.length} mã)</span>
         </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveCostTab('retail')}
+          className={`px-4 py-2.5 rounded-xl text-xs sm:text-sm font-black transition cursor-pointer flex items-center gap-2 ${
+            activeCostTab === 'retail'
+              ? 'bg-emerald-600 text-white shadow-md ring-2 ring-emerald-400'
+              : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200'
+          }`}
+        >
+          <User className="w-4 h-4 text-emerald-300" />
+          <span>Bảng 3: Giá Vốn Nguyên Vật Liệu Cho Các Sản Phẩm Khách Lẻ ({retailStats.total} mã)</span>
+        </button>
       </div>
 
       {/* TOP HEADER & CONTROL PANEL */}
@@ -2057,22 +2375,32 @@ export const ProductCostAnalyticsTable: React.FC<ProductCostAnalyticsTableProps>
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           <div>
             <div className="flex items-center gap-2">
-              <span className="p-2 bg-amber-500/10 text-amber-700 rounded-xl">
-                <Table2 className="w-5 h-5" />
+              <span className={`p-2 rounded-xl ${activeCostTab === 'retail' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-500/10 text-amber-700'}`}>
+                {activeCostTab === 'retail' ? <User className="w-5 h-5" /> : <Table2 className="w-5 h-5" />}
               </span>
               <div>
                 <h3 className="text-base sm:text-lg font-black text-slate-900 flex items-center gap-2">
-                  {activeCostTab === 'dissected'
+                  {activeCostTab === 'retail'
+                    ? 'Bảng Giá Vốn Nguyên Vật Liệu Cho Các Sản Phẩm Khách Lẻ'
+                    : activeCostTab === 'dissected'
                     ? 'Bảng Thống Kê Định Mức Giá Vốn & Tỷ Suất Lợi Nhuận Gộp'
                     : 'Bảng Sản Phẩm Nhập Thành Phẩm & Định Mức Tùy Chỉnh'}
-                  <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-300 font-mono">
-                    {activeCostTab === 'dissected'
+                  <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full font-mono ${
+                    activeCostTab === 'retail'
+                      ? 'bg-emerald-100 text-emerald-900 border border-emerald-300'
+                      : 'bg-amber-100 text-amber-900 border border-amber-300'
+                  }`}>
+                    {activeCostTab === 'retail'
+                      ? `${retailStats.total} Mã Khách Lẻ`
+                      : activeCostTab === 'dissected'
                       ? `${dissectedRows.length} Mã Bóc Tách`
                       : `${importedCustomRows.length} Mã Nhập Thành Phẩm`}
                   </span>
                 </h3>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  {activeCostTab === 'dissected'
+                  {activeCostTab === 'retail'
+                    ? 'Dán danh sách mã SP Khách Lẻ (từ Bảng Giá Mã Sản Phẩm mục Khách Lẻ) và nhập "Giá Nguyên Vật Liệu". Mỗi khi xuất hiện hóa đơn bán hàng Khách Lẻ, hệ thống sẽ tự động tra cứu vào bảng này để lấy giá vốn.'
+                    : activeCostTab === 'dissected'
                     ? 'Tự động liên kết Tên hàng & Giá bán Studio từ Bảng Giá Sản Phẩm. Bóc tách 6 thành phần chi phí (Mực, Giấy, Ván, Màng, Khung, Khác).'
                     : 'Dành riêng cho các mã sản phẩm mua nguyên chiếc, nhập thành phẩm hoặc định mức tùy chỉnh (Abat, Album mở phẳng, Khung nẹp gia cố...). Cho phép tự nhập Giá vốn nhập thủ công.'}
                 </p>
@@ -2094,11 +2422,32 @@ export const ProductCostAnalyticsTable: React.FC<ProductCostAnalyticsTableProps>
                     </span>
                   </div>
                 )}
+                {activeCostTab === 'retail' && (
+                  <div className="mt-1.5 flex items-center gap-2 flex-wrap text-[11px]">
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg bg-emerald-50 text-emerald-950 border border-emerald-300 font-semibold shadow-2xs">
+                      <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                      <span><strong>Tự Động Liên Kết Doanh Số:</strong> Hóa đơn Khách Lẻ tự động trích xuất Giá vốn NVL tại bảng này</span>
+                    </span>
+                  </div>
+                )}
               </div>
             </div>
           </div>
 
           <div className="flex items-center gap-2 flex-wrap shrink-0">
+            {activeCostTab === 'retail' && (
+              <button
+                type="button"
+                onClick={handleAutoPopulateFromRetailCatalog}
+                disabled={isSaving}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-50 hover:bg-amber-100 text-amber-950 border border-amber-300 text-xs font-bold transition cursor-pointer shadow-2xs disabled:opacity-50"
+                title="Đồng bộ danh sách sản phẩm từ bảng giá Khách Lẻ"
+              >
+                <Sparkles className="w-3.5 h-3.5 text-amber-600" />
+                <span>Nạp Từ Bảng Giá Khách Lẻ</span>
+              </button>
+            )}
+
             {activeCostTab === 'dissected' && (
               <>
                 <button
@@ -2154,7 +2503,7 @@ export const ProductCostAnalyticsTable: React.FC<ProductCostAnalyticsTableProps>
 
             <button
               type="button"
-              onClick={handleManualSave}
+              onClick={activeCostTab === 'retail' ? handleSaveAllRetailCosts : handleManualSave}
               disabled={isSaving}
               className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 text-xs font-black shadow-xs transition cursor-pointer disabled:opacity-50"
             >
@@ -2179,8 +2528,17 @@ export const ProductCostAnalyticsTable: React.FC<ProductCostAnalyticsTableProps>
             <span className="text-[11px] text-slate-500 font-bold block">Tổng số mã đang theo dõi</span>
             <div className="flex items-baseline gap-2 mt-1">
               <span className="font-mono text-xl sm:text-2xl font-black text-slate-900">
-                {activeCostTab === 'dissected' ? statsSummary.totalItems : importedCustomRows.length} mã
+                {activeCostTab === 'retail'
+                  ? `${retailStats.total} mã`
+                  : activeCostTab === 'dissected'
+                  ? `${statsSummary.totalItems} mã`
+                  : `${importedCustomRows.length} mã`}
               </span>
+              {activeCostTab === 'retail' && (
+                <span className="text-[11px] font-semibold text-emerald-700">
+                  (Đã có giá NVL: {retailStats.priced}/{retailStats.total} - Chờ điền: {retailStats.unpriced})
+                </span>
+              )}
               {activeCostTab === 'dissected' && (
                 <span className="text-[11px] font-semibold text-emerald-700">
                   (Đã nhập: {statsSummary.filledItems}/{statsSummary.totalItems})
@@ -2193,7 +2551,9 @@ export const ProductCostAnalyticsTable: React.FC<ProductCostAnalyticsTableProps>
             <span className="text-[11px] text-amber-800 font-bold block">Tỷ Suất LNG / Giá Bán TB</span>
             <div className="flex items-baseline gap-2 mt-1">
               <span className="font-mono text-xl sm:text-2xl font-black text-amber-950">
-                {activeCostTab === 'dissected'
+                {activeCostTab === 'retail'
+                  ? (retailStats.avgMargin > 0 ? `${retailStats.avgMargin}%` : '—')
+                  : activeCostTab === 'dissected'
                   ? (statsSummary.avgMarginOnPrice > 0 ? `${statsSummary.avgMarginOnPrice}%` : '—')
                   : (() => {
                       const filled = importedCustomRows.filter(r => r.studioPrice > 0);
@@ -2217,7 +2577,7 @@ export const ProductCostAnalyticsTable: React.FC<ProductCostAnalyticsTableProps>
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Tìm theo mã hàng (VD: Abat, ABMP, NEPST...) hoặc tên sản phẩm..."
+              placeholder="Tìm theo mã hàng (VD: INKL, LVKL, MKKL, HDKL...) hoặc tên sản phẩm..."
               className="w-full pl-9 pr-3 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-amber-500 outline-hidden"
             />
             {searchQuery && (
@@ -2230,6 +2590,30 @@ export const ProductCostAnalyticsTable: React.FC<ProductCostAnalyticsTableProps>
               </button>
             )}
           </div>
+
+          {activeCostTab === 'retail' && (
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <span className="text-xs text-slate-500 font-medium">Lọc:</span>
+              {[
+                { id: 'all' as const, label: `Tất cả (${retailStats.total})` },
+                { id: 'priced' as const, label: `Đã có giá NVL (${retailStats.priced})` },
+                { id: 'unpriced' as const, label: `Chờ nhập giá NVL (${retailStats.unpriced})` }
+              ].map(tab => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setRetailFilterStatus(tab.id)}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
+                    retailFilterStatus === tab.id
+                      ? 'bg-emerald-700 text-white shadow-2xs'
+                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+          )}
 
           {activeCostTab === 'dissected' && (
             <div className="flex items-center gap-1.5 flex-wrap">
@@ -2257,8 +2641,226 @@ export const ProductCostAnalyticsTable: React.FC<ProductCostAnalyticsTableProps>
         </div>
       </div>
 
-      {/* SPREADSHEET TABLE: TAB 2 - DANH MỤC SẢN PHẨM NHẬP THÀNH PHẨM */}
-      {activeCostTab === 'imported' ? (
+      {/* SPREADSHEET TABLE: TAB 3 - GIÁ VỐN NGUYÊN VẬT LIỆU CHO CÁC SẢN PHẨM KHÁCH LẺ */}
+      {activeCostTab === 'retail' ? (
+        <div className="space-y-4">
+          {/* Ô DÁN THÔNG TIN ĐÃ COPY TỪ BẢNG GIÁ MÃ SẢN PHẨM MỤC KHÁCH LẺ */}
+          <div className="bg-gradient-to-r from-emerald-50/90 via-teal-50/50 to-white rounded-2xl border-2 border-dashed border-emerald-300 p-4 sm:p-5 shadow-xs space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <span className="p-2.5 bg-emerald-600 text-white rounded-xl shadow-xs shrink-0">
+                  <ClipboardPaste className="w-5 h-5" />
+                </span>
+                <div>
+                  <h4 className="font-black text-sm sm:text-base text-emerald-950 flex items-center gap-2">
+                    Ô Dán Thông Tin Mã Sản Phẩm Khách Lẻ
+                    <span className="text-[10px] bg-emerald-200 text-emerald-900 font-mono font-bold px-2 py-0.5 rounded-full border border-emerald-400">
+                      Sao Chép & Dán
+                    </span>
+                  </h4>
+                  <p className="text-xs text-emerald-800 mt-0.5">
+                    Dán nội dung gồm <strong>Mã Sản Phẩm, Tên Hàng Hóa, Kích Thước</strong> (đã copy bên Bảng Giá Mã Sản Phẩm mục Khách Lẻ) vào ô bên dưới, sau đó nhập <strong>Giá Nguyên Vật Liệu</strong> tương ứng.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={handleAutoPopulateFromRetailCatalog}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-amber-500 hover:bg-amber-600 text-slate-950 font-black text-xs rounded-xl shadow-xs transition cursor-pointer"
+                  title="Tự động đồng bộ toàn bộ mã Khách Lẻ từ danh mục sản phẩm vào bảng (không làm mất giá NVL đã nhập)"
+                >
+                  <Sparkles className="w-4 h-4 text-slate-950" />
+                  <span>⚡ Nạp Tự Động Từ Bảng Giá Khách Lẻ (1-Click)</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="relative">
+              <textarea
+                rows={4}
+                value={retailPasteText}
+                onChange={(e) => setRetailPasteText(e.target.value)}
+                placeholder="Dán các thông tin đã copy bên mục Khách Lẻ vào đây (hỗ trợ nhiều dòng, mỗi dòng gồm Mã Sản Phẩm [Tab] Tên Hàng Hóa [Tab] Kích Thước [Tab] Đơn Giá)...&#10;Ví dụ:&#10;INKL1015	In Ảnh Lụa Khách Lẻ 10x15	10x15	15000&#10;LVKL6090	Ảnh Lụa Viền Khách Lẻ 60x90	60x90	280000"
+                className="w-full p-3 bg-white border border-emerald-300 rounded-xl text-xs font-mono text-slate-900 focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-hidden resize-y shadow-inner"
+              />
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-emerald-200/60">
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handlePasteFromClipboard}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-xs rounded-xl shadow-xs transition cursor-pointer"
+                  title="Dán nhanh nội dung từ bộ nhớ tạm hoặc bộ nhớ đệm đã lưu khi copy"
+                >
+                  <Clipboard className="w-3.5 h-3.5" />
+                  <span>Dán Từ Bộ Nhớ Tạm</span>
+                </button>
+
+                {retailPasteText.trim() && (
+                  <button
+                    type="button"
+                    onClick={() => setRetailPasteText('')}
+                    className="px-3 py-1.5 text-slate-500 hover:text-slate-800 hover:bg-slate-100 font-bold text-xs rounded-xl transition cursor-pointer"
+                  >
+                    Xóa Ô Dán
+                  </button>
+                )}
+              </div>
+
+              <button
+                type="button"
+                onClick={handleParseAndImportRetailText}
+                disabled={!retailPasteText.trim()}
+                className="inline-flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs rounded-xl shadow-md transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <Check className="w-4 h-4" />
+                <span>✅ Thêm / Cập Nhật Vào Bảng Giá Vốn</span>
+              </button>
+            </div>
+          </div>
+
+          {/* SPREADSHEET TABLE CHO SẢN PHẨM KHÁCH LẺ */}
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
+            <div className="p-3.5 bg-slate-900 text-white flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800">
+              <div className="flex items-center gap-2">
+                <User className="w-4 h-4 text-emerald-400" />
+                <span className="font-extrabold text-sm text-emerald-300">
+                  DANH SÁCH GIÁ VỐN NGUYÊN VẬT LIỆU KHÁCH LẺ ({retailRows.length} SẢN PHẨM)
+                </span>
+              </div>
+              <div className="flex items-center gap-2 text-xs">
+                <span className="text-slate-400">Tự động áp dụng giá vốn cho mọi hóa đơn bán hàng Khách Lẻ có mã tương ứng</span>
+              </div>
+            </div>
+
+            <div className="overflow-x-auto max-h-[70vh]">
+              <table className="w-full text-left text-xs border-collapse">
+                <thead className="sticky top-0 z-20 bg-slate-900 text-white font-bold border-b border-slate-800 shadow-xs">
+                  <tr>
+                    <th className="py-3 px-2 w-10 text-center bg-slate-950 font-mono text-[11px]">STT</th>
+                    <th className="py-3 px-3 w-36 text-emerald-300 font-mono text-xs">Mã Sản Phẩm</th>
+                    <th className="py-3 px-3 min-w-[220px]">Tên Hàng Hóa Khách Lẻ</th>
+                    <th className="py-3 px-2 w-24 text-center bg-slate-800 font-mono">Kích Thước</th>
+                    <th className="py-3 px-3 w-32 text-right bg-slate-800/90 text-indigo-200">Đơn Giá Bán (đ)</th>
+                    <th className="py-3 px-3 w-44 text-right bg-emerald-950 text-emerald-300 font-black border-l border-emerald-800">
+                      Giá Nguyên Vật Liệu (đ)
+                      <span className="block text-[9px] text-emerald-400 font-normal">Cột nhập giá vốn NVL</span>
+                    </th>
+                    <th className="py-3 px-3 w-32 text-right bg-slate-800/80 text-emerald-300">Lợi Nhuận Gộp (đ)</th>
+                    <th className="py-3 px-2 w-28 text-center bg-slate-800/80 text-amber-300">Tỷ Suất LNG (%)</th>
+                    <th className="py-3 px-2 w-16 text-center bg-slate-950">Xóa</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {retailRows.length === 0 ? (
+                    <tr>
+                      <td colSpan={9} className="py-12 text-center text-slate-400">
+                        <div className="flex flex-col items-center justify-center gap-2">
+                          <ClipboardPaste className="w-8 h-8 text-slate-300" />
+                          <p className="font-semibold text-sm">Chưa có sản phẩm khách lẻ nào trong bảng</p>
+                          <p className="text-xs text-slate-400 max-w-md">
+                            Hãy copy mã sản phẩm từ tab "Bảng giá mã sản phẩm (Mục Khách Lẻ)" rồi dán vào ô bên trên, hoặc bấm nút <strong>"⚡ Nạp Tự Động Từ Bảng Giá Khách Lẻ"</strong> để nạp ngay lập tức!
+                          </p>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : (
+                    retailRows.map((row) => (
+                      <tr key={row.code} className="hover:bg-emerald-50/30 transition-colors">
+                        <td className="py-2.5 px-2 text-center font-mono text-slate-400 text-[11px] bg-slate-50/50">
+                          {row.stt}
+                        </td>
+                        <td className="py-2.5 px-3 font-mono font-bold text-emerald-950">
+                          <span className="px-2 py-0.5 rounded-md bg-emerald-100 border border-emerald-300 text-emerald-900 inline-block">
+                            {row.code}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-3 font-medium text-slate-900">
+                          {row.name}
+                        </td>
+                        <td className="py-2.5 px-2 text-center font-mono font-bold text-slate-600 bg-slate-50/50">
+                          {row.size || '—'}
+                        </td>
+                        <td className="py-2.5 px-3 text-right font-mono font-bold text-indigo-950">
+                          <input
+                            type="text"
+                            inputMode="numeric"
+                            value={row.unitPrice > 0 ? formatNumber(row.unitPrice) : ''}
+                            onChange={(e) => handleUpdateRetailCostItem(row.code, 'unitPrice', e.target.value)}
+                            placeholder="0"
+                            className="w-28 px-2 py-1 bg-white border border-indigo-200 rounded-lg text-right font-mono font-bold text-indigo-950 text-xs focus:ring-2 focus:ring-indigo-500 outline-hidden shadow-2xs"
+                          />
+                        </td>
+                        {/* CỘT GIÁ NGUYÊN VẬT LIỆU - CHO PHÉP NHẬP VÀ LƯU TRỰC TIẾP */}
+                        <td className="py-2.5 px-3 text-right bg-emerald-50/40 border-l border-emerald-200">
+                          <div className="flex items-center justify-end gap-1.5">
+                            <input
+                              type="text"
+                              inputMode="numeric"
+                              value={row.materialCost > 0 ? formatNumber(row.materialCost) : ''}
+                              onChange={(e) => handleUpdateRetailCostItem(row.code, 'materialCost', e.target.value)}
+                              placeholder="Nhập giá NVL..."
+                              className={`w-36 px-2.5 py-1.5 rounded-lg text-right font-mono font-bold text-xs outline-hidden shadow-2xs transition ${
+                                row.materialCost > 0
+                                  ? 'bg-emerald-50 border border-emerald-400 text-emerald-950 focus:ring-2 focus:ring-emerald-500'
+                                  : 'bg-amber-50/80 border border-amber-300 text-amber-900 placeholder:text-amber-400 focus:ring-2 focus:ring-amber-500'
+                              }`}
+                            />
+                          </div>
+                        </td>
+                        {/* LỢI NHUẬN GỘP */}
+                        <td className="py-2.5 px-3 text-right font-mono font-extrabold text-xs">
+                          {row.unitPrice > 0 ? (
+                            <span className={row.grossProfit >= 0 ? 'text-emerald-700' : 'text-rose-600'}>
+                              {formatCurrency(row.grossProfit)}
+                            </span>
+                          ) : (
+                            <span className="text-slate-400 italic">—</span>
+                          )}
+                        </td>
+                        {/* TỶ SUẤT LNG (%) */}
+                        <td className="py-2.5 px-2 text-center">
+                          {row.unitPrice > 0 ? (
+                            <span className={`inline-flex items-center gap-0.5 px-2.5 py-0.5 rounded-full text-[11px] font-mono font-bold border ${getMarginBadge(row.marginOnPrice, true)}`}>
+                              {row.marginOnPrice >= 0 ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownRight className="w-3 h-3" />}
+                              <span>{row.marginOnPrice.toFixed(1)}%</span>
+                            </span>
+                          ) : (
+                            <span className="text-slate-400 italic">—</span>
+                          )}
+                        </td>
+                        {/* THAO TÁC XÓA */}
+                        <td className="py-2.5 px-2 text-center">
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteRetailItem(row.code, row.name)}
+                            className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition cursor-pointer"
+                            title="Xóa mã này khỏi bảng giá vốn khách lẻ"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="p-3.5 bg-slate-50 border-t border-slate-200 text-xs text-slate-600 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Info className="w-4 h-4 text-emerald-600 shrink-0" />
+                <span>
+                  <strong>Quy tắc tính giá vốn Khách Lẻ:</strong> Khi xuất hiện đơn hàng của Khách Lẻ có mã sản phẩm trong bảng này, hệ thống sẽ tự động lấy đơn giá từ cột <em>"Giá Nguyên Vật Liệu"</em> nhân với số lượng bán để tính vào chi phí vật tư và lợi nhuận thuần.
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : activeCostTab === 'imported' ? (
         <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden space-y-0">
           <div className="p-4 bg-slate-900 text-white flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800">
             <div>

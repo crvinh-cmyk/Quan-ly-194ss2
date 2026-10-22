@@ -288,6 +288,35 @@ export const ProductCatalogView: React.FC<ProductCatalogViewProps> = ({
     showToast(`Đã sao chép thành công toàn bộ ${studioCount} sản phẩm từ 1. Studio sang 2. Freelance (+10% giá, thay mã ST ➔ FL)!`);
   };
 
+  const handleCopyAllRetailToClipboard = () => {
+    const retailProducts = products.filter(p => p.category === 'Khách Lẻ');
+    if (retailProducts.length === 0) {
+      showToast('Không có sản phẩm Khách Lẻ nào để sao chép.');
+      return;
+    }
+
+    // Format: Mã sản phẩm [Tab] Tên hàng hóa [Tab] Kích thước [Tab] Đơn giá
+    const textLines = retailProducts.map(p => `${p.code}\t${p.name}\t${p.size || ''}\t${p.price || 0}`);
+    const fullText = textLines.join('\n');
+
+    try {
+      localStorage.setItem('copied_retail_products_text', fullText);
+      localStorage.setItem('tiem_in_194_copied_retail_products_text', fullText);
+    } catch (e) {}
+
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(fullText)
+        .then(() => {
+          showToast(`Đã copy ${retailProducts.length} mã sản phẩm Khách Lẻ (Mã, Tên, Kích thước, Giá)! Hãy sang tab "Định Mức Giá Vốn & Tỷ Suất LNG" để dán.`);
+        })
+        .catch(() => {
+          showToast(`Đã lưu ${retailProducts.length} mã sản phẩm Khách Lẻ vào bộ nhớ tạm!`);
+        });
+    } else {
+      showToast(`Đã lưu ${retailProducts.length} mã sản phẩm Khách Lẻ vào bộ nhớ!`);
+    }
+  };
+
   const handleOpenAdd = (defaultCat?: ProductCategory) => {
     setEditingProduct(null);
     const cat = defaultCat || (activeTab === 'Freelance' || activeTab === 'Khách Lẻ' || activeTab === 'GIÁ STUDIO' ? activeTab : 'GIÁ STUDIO');
@@ -962,16 +991,27 @@ export const ProductCatalogView: React.FC<ProductCatalogViewProps> = ({
       )}
 
       {activeTab === 'Khách Lẻ' && (
-        <div className="p-3.5 bg-emerald-50/70 border border-emerald-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-emerald-900">
+        <div className="p-3.5 bg-emerald-50/70 border border-emerald-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-emerald-900">
           <div className="flex items-center gap-2">
             <User className="w-4 h-4 text-emerald-700 shrink-0" />
             <span>
               <strong>BẢNG GIÁ KHÁCH LẺ:</strong> Đơn giá in ảnh bán lẻ tiêu chuẩn cho gia đình và sự kiện (Mã chuẩn: INKL, inepKL, LVKL, MKKL, HDKL).
             </span>
           </div>
-          <span className="font-mono font-bold text-emerald-900 shrink-0 bg-emerald-100 px-2 py-0.5 rounded-lg border border-emerald-300">
-            {retailCount} sản phẩm áp dụng
-          </span>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={handleCopyAllRetailToClipboard}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-xs rounded-xl shadow-xs transition cursor-pointer"
+              title="Sao chép toàn bộ mã sản phẩm, tên hàng hóa và kích thước khách lẻ để dán sang bảng giá vốn NVL"
+            >
+              <Copy className="w-3.5 h-3.5 text-emerald-100" />
+              Copy Mã, Tên & Kích thước Khách Lẻ
+            </button>
+            <span className="font-mono font-bold text-emerald-900 shrink-0 bg-emerald-100 px-2.5 py-1 rounded-xl border border-emerald-300">
+              {retailCount} sản phẩm
+            </span>
+          </div>
         </div>
       )}
 
