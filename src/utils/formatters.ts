@@ -1,3 +1,4 @@
+import { Order } from '../types';
 export { getDisplayPrice, getRevenueMultiplier, isPartnerMode } from './partnerConfig';
 
 export function formatCurrency(amount: number): string {
@@ -294,5 +295,168 @@ export function getCustomerFacingName(order?: { customerName?: string; guestName
   }
 
   return cleanName;
+}
+
+/**
+ * Chuẩn hóa số điện thoại: chỉ giữ lại chữ số
+ */
+export function normalizePhoneNumber(phone?: string | null): string {
+  if (!phone) return '';
+  return phone.replace(/\D/g, '');
+}
+
+/**
+ * Chuẩn hóa tên khách hàng phục vụ so sánh (bỏ dấu cách thừa, viết thường)
+ */
+export function normalizeCustomerName(name?: string | null): string {
+  if (!name) return '';
+  return name.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+/**
+ * Kiểm tra xem một chuỗi tên có phải là tên chung/tên tệp vãng lai hay không (không phải định danh riêng của một cá nhân cụ thể)
+ */
+export function isGenericPoolName(name?: string | null): boolean {
+  if (!name) return true;
+  const norm = normalizeCustomerName(name);
+  if (!norm) return true;
+  return (
+    norm === 'khách lẻ' ||
+    norm === 'khach le' ||
+    norm === 'khách lẻ vãng lai' ||
+    norm === 'khach le vang lai' ||
+    norm === 'khách vãng lai' ||
+    norm === 'khach vang lai' ||
+    norm === 'quý khách' ||
+    norm === 'quy khach' ||
+    norm === 'tổng hợp freelance doanh số ít' ||
+    norm === 'tổng hợp freelance' ||
+    norm === 'tong hop freelance' ||
+    norm === 'freelance' ||
+    norm === 'frelance' ||
+    norm === 'thợ freelance' ||
+    norm === 'tho freelance'
+  );
+}
+
+export interface WalkInDebtLookupResult {
+  previousDebt: number;
+  lookupMethod: 'phone' | 'name' | 'none';
+  matchedOrderNumber?: string;
+  matchedCustomerName?: string;
+  matchedDate?: string;
+}
+
+/**
+ * Tra cứu nợ cũ cho khách hàng thuộc tệp vãng lai ('Khách lẻ' hoặc 'Tổng hợp Freelance Doanh số ít'):
+ * 1. TUYỆT ĐỐI KHÔNG dùng ID chung của nhóm này để truy vấn nợ cũ.
+ * 2. Tra cứu nợ cũ theo Định danh riêng:
+ *    - Nếu có nhập Số điện thoại (>= 8 chữ số): Tra cứu nợ cũ theo Số điện thoại.
+ *    - Nếu KHÔNG có Số điện thoại: Tra cứu nợ cũ theo chính Tên khách hàng gõ tay.
+ * 3. Nếu cả Tên và SĐT này chưa từng có đơn nợ nào trước đó, nợ cũ tự động bằng 0 ₫, tuyệt đối không cộng dồn nợ của các khách lẻ khác trước đó vào.
+ */
+export function findWalkInCustomerPreviousDebt(
+  phone: string | undefined | null,
+  rawName: string | undefined | null,
+  allOrders: Order[],
+  excludeOrderId?: string | null
+): WalkInDebtLookupResult {
+  const cleanPhone = normalizePhoneNumber(phone);
+  const cleanTargetName = normalizeCustomerName(rawName);
+
+  // 1. NẾU CÓ NHẬP SỐ ĐIỆN THOẠI: Tra cứu nợ cũ theo Số điện thoại (chỉ xét khi có từ 8 số trở lên)
+  if (cleanPhone && cleanPhone.length >= 8) {
+    const ordersWithMatchingPhone = allOrders
+      .filter(o => {
+        if (excludeOrderId && o.id === excludeOrderId) return false;
+        if (o.status === 'cancelled') return false;
+        const oPhone = normalizePhoneNumber(o.customerPhone);
+        return oPhone && oPhone === cleanPhone;
+      })
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime() || (b.createdAt || '').localeCompare(a.createdAt || ''));
+
+    if (ordersWithMatchingPhone.length > 0) {
+      const latestOrder = ordersWithMatchingPhone[0];
+      return {
+        previousDebt: Math.max(0, latestOrder.totalDue || 0),
+        lookupMethod: 'phone',
+        matchedOrderNumber: latestOrder.orderNumber,
+        matchedCustomerName: latestOrder.customerName,
+        matchedDate: latestOrder.date
+      };
+    }
+
+    // Có SĐT nhưng số này chưa từng có đơn nợ nào trước đó -> nợ cũ tự động bằng 0 ₫
+    return {
+      previousDebt: 0,
+      lookupMethod: 'phone'
+    };
+  }
+
+  // 2. NẾU KHÔNG CÓ SỐ ĐIỆN THOẠI: Tra cứu nợ cũ theo chính Tên khách hàng gõ tay
+  if (cleanTargetName && !isGenericPoolName(cleanTargetName)) {
+    const ordersWithMatchingName = allOrders
+      .filter(o => {
+        if (excludeOrderId && o.id === excludeOrderId) return false;
+        if (o.status === 'cancelled') return false;
+
+        // So sánh với guestName (tên riêng gõ tay của đơn trước)
+        if (o.guestName && normalizeCustomerName(o.guestName) === cleanTargetName) {
+          return true;
+        }
+
+        // So sánh với tên hiển thị khách hàng (đã bóc tách tiền tố Khách lẻ / Freelance)
+        const facingName = normalizeCustomerName(getCustomerFacingName(o));
+        if (facingName && facingName === cleanTargetName && !isGenericPoolName(facingName)) {
+          return true;
+        }
+
+        // So sánh với customerName
+        if (o.customerName) {
+          const normCustName = normalizeCustomerName(o.customerName);
+          if (normCustName === cleanTargetName) return true;
+
+          if (
+            normCustName.startsWith('khách lẻ - ') &&
+            normCustName.replace('khách lẻ - ', '').trim() === cleanTargetName
+          ) {
+            return true;
+          }
+          if (
+            normCustName.startsWith('freelance - ') &&
+            normCustName.replace('freelance - ', '').trim() === cleanTargetName
+          ) {
+            return true;
+          }
+        }
+
+        return false;
+      })
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime() || (b.createdAt || '').localeCompare(a.createdAt || ''));
+
+    if (ordersWithMatchingName.length > 0) {
+      const latestOrder = ordersWithMatchingName[0];
+      return {
+        previousDebt: Math.max(0, latestOrder.totalDue || 0),
+        lookupMethod: 'name',
+        matchedOrderNumber: latestOrder.orderNumber,
+        matchedCustomerName: latestOrder.customerName,
+        matchedDate: latestOrder.date
+      };
+    }
+
+    // Tên gõ tay này chưa từng có đơn nào trước đó -> nợ cũ tự động bằng 0 ₫
+    return {
+      previousDebt: 0,
+      lookupMethod: 'name'
+    };
+  }
+
+  // 3. Nếu chưa nhập cả SĐT lẫn Tên riêng (hoặc chỉ để 'Khách Lẻ' / 'Tổng hợp Freelance Doanh số ít' chung chung):
+  // Nợ cũ tự động bằng 0 ₫, tuyệt đối không cộng dồn nợ của các khách lẻ khác trước đó vào.
+  return {
+    previousDebt: 0,
+    lookupMethod: 'none'
+  };
 }
 

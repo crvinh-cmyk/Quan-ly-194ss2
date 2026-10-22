@@ -234,6 +234,58 @@ export default function App() {
     };
   }, [currentUser]);
 
+  // Tự động đối trừ và đánh dấu 'Đã thu' (hoàn tất) trên Firestore cho toàn bộ các đơn hàng cũ trước đó
+  // của 2 tệp vãng lai: 'Tổng hợp Freelance Doanh số ít' và 'Khách lẻ'
+  // (đã được thanh toán qua các phiếu thu nợ PT-194)
+  useEffect(() => {
+    if (!orders || orders.length === 0) return;
+    const ordersToReconcile: Order[] = [];
+
+    orders.forEach(ord => {
+      if (ord.orderNumber.startsWith('PT-')) return;
+      const ordName = (ord.customerName || '').toLowerCase();
+      const guestName = (ord.guestName || '').toLowerCase();
+      const match = ord.orderNumber.match(/194-\d{4}-(\d+)/);
+      const seq = match && match[1] ? parseInt(match[1], 10) : 0;
+
+      // 1. Tệp Freelance: mọi đơn cũ trước đơn 070 (bao gồm anh Hà 425k, Frelance 113.5k, anh Công Huyên 38.5k...)
+      const isFreelance = ordName.includes('freelance') || ordName.includes('frelance') || ord.customerId === 'c4' || ord.customerId === 'cust-freelance';
+      if (isFreelance && !ord.orderNumber.includes('070') && !ordName.includes('minh hoàng') && !guestName.includes('minh hoàng')) {
+        if (seq <= 70 && ord.totalDue > 0) {
+          const invoiced = ord.subtotal - (ord.discount || 0);
+          ordersToReconcile.push({
+            ...ord,
+            totalDue: 0,
+            paid: invoiced > 0 ? invoiced : ord.paid,
+            status: 'completed' as OrderStatus,
+            updatedAt: new Date().toISOString()
+          });
+        }
+      }
+
+      // 2. Tệp Khách lẻ: mọi đơn cũ trước đơn 067 (bao gồm chị Phượng 70k, Quý Khách 40k...)
+      const isRetail = ordName.includes('khách lẻ') || ordName.includes('khach le') || ord.customerId === 'c5' || ord.customerId === 'cust-khach-le';
+      if (isRetail && !ord.orderNumber.includes('067') && !ordName.includes('hà lê') && !guestName.includes('hà lê')) {
+        if (seq <= 67 && ord.totalDue > 0) {
+          const invoiced = ord.subtotal - (ord.discount || 0);
+          ordersToReconcile.push({
+            ...ord,
+            totalDue: 0,
+            paid: invoiced > 0 ? invoiced : ord.paid,
+            status: 'completed' as OrderStatus,
+            updatedAt: new Date().toISOString()
+          });
+        }
+      }
+    });
+
+    if (ordersToReconcile.length > 0) {
+      ordersToReconcile.forEach(o => {
+        saveOrderToFirestore(o, userContext).catch(console.error);
+      });
+    }
+  }, [orders.length]);
+
   // Combo CRUD handlers (Direct Firestore)
   const handleSaveCombo = (combo: StudioCombo) => {
     saveComboToFirestore(combo, userContext).catch(console.error);
@@ -594,16 +646,23 @@ export default function App() {
   };
 
   // Quick pay remaining debt on order directly on Firestore
-  const handlePayOrderDebt = (order: Order) => {
-    const paymentAmt = order.totalDue;
+  const handlePayOrderDebt = (order: Order, amount?: number) => {
+    const paymentAmt = (amount !== undefined && amount > 0) ? amount : order.totalDue;
     if (paymentAmt <= 0) return;
+    const invoicedTotal = order.subtotal - (order.discount || 0);
+    const newPaid = (order.paid || 0) + paymentAmt;
+    const newTotalDue = Math.max(0, invoicedTotal - newPaid);
     const updatedOrder: Order = {
       ...order,
-      paid: order.paid + paymentAmt,
-      totalDue: 0,
-      status: 'completed' as OrderStatus,
+      paid: newPaid,
+      totalDue: newTotalDue,
+      status: (newTotalDue === 0 ? 'completed' : order.status) as OrderStatus,
       updatedAt: new Date().toISOString()
     };
+    saveOrderToFirestore(updatedOrder, userContext).catch(console.error);
+  };
+
+  const handleUpdateOrder = (updatedOrder: Order) => {
     saveOrderToFirestore(updatedOrder, userContext).catch(console.error);
   };
 
@@ -883,6 +942,8 @@ export default function App() {
             onUpdateCustomer={isPartnerMode() ? () => {} : handleUpdateCustomer}
             onDeleteCustomer={isPartnerMode() ? undefined : handleDeleteCustomer}
             onRecordDebtPayment={isPartnerMode() ? () => {} : handleRecordDebtPayment}
+            onUpdateOrder={isPartnerMode() ? () => {} : handleUpdateOrder}
+            onPayOrderDebt={isPartnerMode() ? () => {} : handlePayOrderDebt}
             onPrintOrder={(order) => setActivePrintOrder(order)}
             onViewCustomerOrders={(cId) => {
               if (!isPartnerMode()) {

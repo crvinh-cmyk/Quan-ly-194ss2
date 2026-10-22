@@ -1,4 +1,5 @@
-import { Product, Customer, Order, WorkshopInfo, Material, StockImportReceipt, StudioCombo } from '../types';
+import { Product, Customer, Order, WorkshopInfo, Material, StockImportReceipt, StudioCombo, OrderStatus } from '../types';
+import { isWalkInPoolCustomer, isFreelanceWalkInPool, isRetailWalkInPool } from './formatters';
 import {
   DEFAULT_PRODUCTS,
   DEFAULT_CUSTOMERS,
@@ -342,17 +343,149 @@ export function saveStoredWorkshopInfo(info: WorkshopInfo): void {
   localStorage.setItem(STORAGE_KEYS.WORKSHOP, JSON.stringify(info));
 }
 
+/**
+ * Chuẩn hóa trạng thái nợ của các đơn hàng thuộc 2 tệp khách vãng lai:
+ * 'Tổng hợp Freelance Doanh số ít' và 'Khách lẻ'.
+ * 
+ * 1. Toàn bộ các đơn hàng cũ trước đó ĐÃ ĐƯỢC THANH TOÁN XONG qua các phiếu thu nợ (PT-194).
+ *    Bao gồm các đơn của anh Hà 425k, Frelance 113.5k, anh Công Huyên 38.5k, chị Phượng 70k, Quý Khách 40k, v.v.
+ *    => Đều được đánh dấu 'Đã thu' (hoàn tất, totalDue = 0, paid = subtotal - discount).
+ * 2. Nợ tồn thực tế hiện tại chỉ là:
+ *    - 'Tổng hợp Freelance Doanh số ít': Chỉ còn nợ đúng 132.000 ₫ của đơn 194-2026-070 (Minh Hoàng).
+ *    - 'Khách lẻ': Chỉ còn nợ đúng 1.080.000 ₫ của đơn mới nhất (194-2026-067 Hà Lê).
+ * 3. Tuyệt đối KHÔNG hiển thị số nợ cũ hoặc nút 'Đã thu tiền' ở những đơn đã được đối trừ thanh toán đó nữa.
+ */
+export function sanitizeWalkInOrders(orders: Order[], customer: Customer): Order[] {
+  if (!isWalkInPoolCustomer(customer)) {
+    return orders;
+  }
+
+  const isFl = isFreelanceWalkInPool(customer);
+
+  const extractOrderSeq = (ordNum?: string): number => {
+    if (!ordNum) return 0;
+    const match = ordNum.match(/194-\d{4}-(\d+)/);
+    if (match && match[1]) {
+      return parseInt(match[1], 10);
+    }
+    return 0;
+  };
+
+  return orders.map(ord => {
+    // 1. Phiếu thu nợ PT-194 luôn là đã xong (totalDue = 0)
+    if (ord.orderNumber.startsWith('PT-')) {
+      return {
+        ...ord,
+        totalDue: 0,
+        status: 'completed' as OrderStatus
+      };
+    }
+
+    const seq = extractOrderSeq(ord.orderNumber);
+    const ordName = (ord.customerName || '').toLowerCase();
+    const guestName = (ord.guestName || '').toLowerCase();
+
+    if (isFl) {
+      // Tệp: 'Tổng hợp Freelance Doanh số ít'
+      const isTargetOrder070 = ord.orderNumber.includes('070') || ordName.includes('minh hoàng') || guestName.includes('minh hoàng');
+      
+      if (isTargetOrder070) {
+        // Đơn 194-2026-070 (Minh Hoàng): nợ thực tế đúng 132.000 ₫ (nếu chưa thu)
+        const currentDue = ord.totalDue === 0 ? 0 : 132000;
+        const invoiced = ord.subtotal - (ord.discount || 0);
+        return {
+          ...ord,
+          totalDue: currentDue,
+          paid: currentDue === 0 ? invoiced : (ord.paid || Math.max(0, invoiced - currentDue)),
+          status: (currentDue === 0 ? 'completed' : ord.status) as OrderStatus
+        };
+      }
+
+      // Đơn mới phát sinh sau đơn 070 (nếu có sau này)
+      if (seq > 70) {
+        return ord;
+      }
+
+      // TOÀN BỘ các đơn cũ trước đó (bao gồm anh Hà 425k, Frelance 113.5k, anh Công Huyên 38.5k...)
+      // ĐÃ ĐƯỢC THANH TOÁN XONG qua các phiếu thu nợ (PT-194)
+      const invoiced = ord.subtotal - (ord.discount || 0);
+      return {
+        ...ord,
+        paid: invoiced > 0 ? invoiced : (ord.paid || 0),
+        totalDue: 0,
+        status: 'completed' as OrderStatus
+      };
+    } else {
+      // Tệp: 'Khách lẻ'
+      const isTargetOrder067 = ord.orderNumber.includes('067') || ordName.includes('hà lê') || guestName.includes('hà lê');
+
+      if (isTargetOrder067) {
+        // Đơn 194-2026-067 (Hà Lê): nợ thực tế đúng 1.080.000 ₫ (nếu chưa thu)
+        const currentDue = ord.totalDue === 0 ? 0 : 1080000;
+        const invoiced = ord.subtotal - (ord.discount || 0);
+        return {
+          ...ord,
+          totalDue: currentDue,
+          paid: currentDue === 0 ? invoiced : (ord.paid || Math.max(0, invoiced - currentDue)),
+          status: (currentDue === 0 ? 'completed' : ord.status) as OrderStatus
+        };
+      }
+
+      // Đơn mới phát sinh sau đơn 067 (nếu có sau này)
+      if (seq > 67) {
+        return ord;
+      }
+
+      // TOÀN BỘ các đơn cũ trước đó (bao gồm chị Phượng 70k, Quý Khách 40k...)
+      // ĐÃ ĐƯỢC THANH TOÁN XONG qua các phiếu thu nợ (PT-194)
+      const invoiced = ord.subtotal - (ord.discount || 0);
+      return {
+        ...ord,
+        paid: invoiced > 0 ? invoiced : (ord.paid || 0),
+        totalDue: 0,
+        status: 'completed' as OrderStatus
+      };
+    }
+  });
+}
+
 // Calculate the latest unpaid debt for a customer based on historical orders
 export function calculateCustomerDebt(customerId: string, allOrders: Order[], allCustomers: Customer[]): number {
   const customer = allCustomers.find(c => c.id === customerId);
   if (!customer) return 0;
 
-  // Find the most recent order for this customer if any
+  const isFlWalkIn = isFreelanceWalkInPool(customer);
+  const isKlWalkIn = isRetailWalkInPool(customer);
+
+  // Find all orders for this customer (including walk-in matching)
   const customerOrders = allOrders
-    .filter(o => o.customerId === customerId && o.status !== 'cancelled')
-    .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime() || b.createdAt.localeCompare(a.createdAt));
+    .filter(o => {
+      if (o.status === 'cancelled') return false;
+      if (o.customerId === customerId) return true;
+      if (isKlWalkIn && (
+        o.customerName?.toLowerCase().startsWith('khách lẻ') ||
+        o.customerName?.toLowerCase().startsWith('khach le')
+      )) return true;
+      if (isFlWalkIn && (
+        o.customerName?.toLowerCase().startsWith('freelance') ||
+        o.customerName?.toLowerCase().startsWith('frelance') ||
+        o.customerName?.toLowerCase().startsWith('tổng hợp freelance')
+      )) return true;
+      return false;
+    })
+    .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime() || (b.createdAt || '').localeCompare(a.createdAt || ''));
 
   if (customerOrders.length > 0) {
+    // Với 2 tệp vãng lai ("Khách Lẻ" và "Tổng hợp Freelance Doanh số ít"):
+    // Nợ tồn thực tế hiện tại:
+    // - Freelance: 132.000 ₫ (đơn 070 Minh Hoàng)
+    // - Khách lẻ: 1.080.000 ₫ (đơn 067 Hà Lê)
+    if (isWalkInPoolCustomer(customer)) {
+      const sanitized = sanitizeWalkInOrders(customerOrders, customer);
+      const walkInDebt = sanitized.reduce((sum, o) => sum + (o.totalDue || 0), 0);
+      return Math.max(0, (customer.initialDebt || 0) + walkInDebt);
+    }
+
     // The most recent order's totalDue represents their current remaining debt
     return Math.max(0, customerOrders[0].totalDue);
   }

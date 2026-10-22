@@ -1,6 +1,10 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Product, Customer, Order, OrderItem, Material, ProductCategory, StudioCombo } from '../types';
-import { formatCurrency, formatNumber, getTodayDateString, formatDateVN, numberToVietnameseWords, isFreelanceWalkInPool, isRetailWalkInPool, isWalkInPoolCustomer } from '../utils/formatters';
+import {
+  formatCurrency, formatNumber, getTodayDateString, formatDateVN, numberToVietnameseWords,
+  isFreelanceWalkInPool, isRetailWalkInPool, isWalkInPoolCustomer,
+  findWalkInCustomerPreviousDebt, isGenericPoolName, WalkInDebtLookupResult
+} from '../utils/formatters';
 import { calculateOrderBOM, calculateItemBOM, createMaterialDeductionRecords, extractEffectiveSize, normalizeSize, resolveProductCoreMaterial } from '../utils/materialBOM';
 import {
   Plus, Trash2, Search, Check, Save, Printer, RefreshCw, UserPlus,
@@ -63,6 +67,7 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
   const [editingOrderCreatedAt, setEditingOrderCreatedAt] = useState<string>('');
   const isEditMode = !!editingInvoiceId;
   const isPartner = isPartnerMode();
+  const isFirstEditLoadRef = useRef<boolean>(false);
 
   // Order general info
   const [orderDate, setOrderDate] = useState<string>(getTodayDateString());
@@ -198,15 +203,30 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
       setPopularTier(customer.customerType);
     }
 
-    // Compute previous debt of this customer from previous orders
-    const pastOrders = allOrders
-      .filter(o => o.customerId === customer.id && o.status !== 'cancelled')
-      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime() || b.createdAt.localeCompare(a.createdAt));
+    // Kiểm tra xem khách có thuộc tệp 'Khách lẻ' hoặc 'Tổng hợp Freelance Doanh số ít' hay không
+    const isPool = isWalkInPoolCustomer(customer) ||
+      customer.id === 'cust-khach-le' || customer.id === 'cust-freelance' || customer.id === 'c5' || customer.id === 'c4' ||
+      customer.name.toLowerCase() === 'khách lẻ' || customer.name.toLowerCase().includes('tổng hợp freelance');
 
-    if (pastOrders.length > 0) {
-      setPreviousDebt(pastOrders[0].totalDue);
+    if (isPool) {
+      // 1. TUYỆT ĐỐI KHÔNG dùng ID chung của nhóm này để truy vấn nợ cũ!
+      // 2. Tra cứu nợ cũ theo Định danh riêng:
+      //    - Nếu có nhập Số điện thoại: Tra cứu nợ cũ theo Số điện thoại.
+      //    - Nếu KHÔNG có Số điện thoại: Tra cứu nợ cũ theo chính Tên khách hàng gõ tay.
+      // 3. Nếu cả Tên và SĐT này chưa từng có đơn nợ nào trước đó, nợ cũ tự động bằng 0 ₫.
+      const lookup = findWalkInCustomerPreviousDebt(customer.phone || customerPhone, guestName, allOrders, editingInvoiceId);
+      setPreviousDebt(lookup.previousDebt);
     } else {
-      setPreviousDebt(customer.initialDebt || 0);
+      // Compute previous debt of regular Studio customer from previous orders
+      const pastOrders = allOrders
+        .filter(o => o.customerId === customer.id && o.status !== 'cancelled' && o.id !== editingInvoiceId)
+        .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime() || b.createdAt.localeCompare(a.createdAt));
+
+      if (pastOrders.length > 0) {
+        setPreviousDebt(pastOrders[0].totalDue);
+      } else {
+        setPreviousDebt(customer.initialDebt || 0);
+      }
     }
   };
 
@@ -238,6 +258,28 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
 
   const isSpecialWalkIn = isKhachLe || isFreelanceWalkIn;
 
+  // Tra cứu nợ cũ theo Định danh riêng cho tệp 'Khách lẻ' hoặc 'Tổng hợp Freelance Doanh số ít':
+  // - Nếu có SĐT: tra cứu theo SĐT
+  // - Nếu không có SĐT: tra cứu theo chính Tên khách hàng gõ tay
+  // - Nếu chưa từng có đơn nợ nào trước đó: tự động = 0 ₫
+  const walkInDebtResult = useMemo<WalkInDebtLookupResult | null>(() => {
+    if (!isSpecialWalkIn) return null;
+    const lookupName = guestName.trim() || (isGenericPoolName(customerName) ? '' : customerName.trim());
+    return findWalkInCustomerPreviousDebt(customerPhone, lookupName, allOrders, editingInvoiceId);
+  }, [isSpecialWalkIn, customerPhone, guestName, customerName, allOrders, editingInvoiceId]);
+
+  // Tự động cập nhật nợ cũ khi người dùng thay đổi SĐT hoặc Tên riêng của khách vãng lai
+  useEffect(() => {
+    if (!isSpecialWalkIn) return;
+    if (isFirstEditLoadRef.current) {
+      isFirstEditLoadRef.current = false;
+      return;
+    }
+    if (walkInDebtResult) {
+      setPreviousDebt(walkInDebtResult.previousDebt);
+    }
+  }, [isSpecialWalkIn, customerPhone, guestName, selectedCustomerId, walkInDebtResult]);
+
   // Chọn nhanh tệp Khách Lẻ hoặc Tổng Hợp Freelance chỉ với 1 click
   const handleQuickSelectWalkIn = (type: 'Khách Lẻ' | 'Freelance') => {
     let matched = customers.find(c => type === 'Khách Lẻ' ? isRetailWalkInPool(c) : isFreelanceWalkInPool(c));
@@ -254,6 +296,8 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
       setCustomerSearch(dispName);
       setCatalogCategory(type);
       setPopularTier(type);
+      const lookup = findWalkInCustomerPreviousDebt(customerPhone, guestName, allOrders, editingInvoiceId);
+      setPreviousDebt(lookup.previousDebt);
     }
     setShowCustomerDropdown(false);
   };
@@ -667,6 +711,7 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
   // Load editing order into form when editingOrder changes
   useEffect(() => {
     if (editingOrder) {
+      isFirstEditLoadRef.current = true;
       setEditingInvoiceId(editingOrder.id);
       setEditingOrderNumber(editingOrder.orderNumber);
       setEditingOrderCreatedAt(editingOrder.createdAt);
@@ -1511,6 +1556,54 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
                     </div>
                   </div>
                 </div>
+
+                {/* DÒNG HIỂN THỊ KẾT QUẢ TRA CỨU NỢ CŨ THEO ĐỊNH DANH RIÊNG (SĐT / TÊN) */}
+                {walkInDebtResult && (customerPhone.trim() || guestName.trim()) && (
+                  <div className="mt-2.5 pt-2 border-t border-amber-200/90 flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="font-bold text-amber-950 flex items-center gap-1">
+                        <Search className="w-3 h-3 text-amber-700" />
+                        <span>Tra cứu nợ cũ:</span>
+                      </span>
+                      {walkInDebtResult.lookupMethod === 'phone' ? (
+                        walkInDebtResult.previousDebt > 0 ? (
+                          <span className="text-red-700 font-bold bg-red-100/80 border border-red-300 px-2 py-0.5 rounded-lg flex items-center gap-1">
+                            <span>Khớp theo SĐT ({customerPhone.trim()}): nợ cũ <strong>{formatCurrency(walkInDebtResult.previousDebt)}</strong></span>
+                            {walkInDebtResult.matchedOrderNumber && (
+                              <span className="font-mono text-[10px] text-slate-600 font-normal">
+                                (Đơn #{walkInDebtResult.matchedOrderNumber})
+                              </span>
+                            )}
+                          </span>
+                        ) : (
+                          <span className="text-emerald-800 font-semibold bg-emerald-100/70 border border-emerald-300 px-2 py-0.5 rounded-lg">
+                            ✓ SĐT này chưa từng có đơn nợ nào trước đó: Nợ cũ = 0 ₫
+                          </span>
+                        )
+                      ) : walkInDebtResult.lookupMethod === 'name' ? (
+                        walkInDebtResult.previousDebt > 0 ? (
+                          <span className="text-red-700 font-bold bg-red-100/80 border border-red-300 px-2 py-0.5 rounded-lg flex items-center gap-1">
+                            <span>Khớp theo tên ({guestName.trim()}): nợ cũ <strong>{formatCurrency(walkInDebtResult.previousDebt)}</strong></span>
+                            {walkInDebtResult.matchedOrderNumber && (
+                              <span className="font-mono text-[10px] text-slate-600 font-normal">
+                                (Đơn #{walkInDebtResult.matchedOrderNumber})
+                              </span>
+                            )}
+                          </span>
+                        ) : (
+                          <span className="text-emerald-800 font-semibold bg-emerald-100/70 border border-emerald-300 px-2 py-0.5 rounded-lg">
+                            ✓ Tên này chưa từng có đơn nợ nào trước đó: Nợ cũ = 0 ₫
+                          </span>
+                        )
+                      ) : null}
+                    </div>
+                    {walkInDebtResult.previousDebt > 0 && (
+                      <span className="text-[11px] text-amber-900 font-medium italic">
+                        (Đã tự điền nợ vào mục 2)
+                      </span>
+                    )}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -2329,7 +2422,31 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
                 <div className="flex items-center justify-between text-sm pt-2 border-t border-slate-800">
                   <div>
                     <span className="text-amber-300 font-bold">2. Nợ cũ:</span>
-                    <span className="text-[11px] text-slate-400 ml-1.5">(Tự nạp theo khách)</span>
+                    {isSpecialWalkIn ? (
+                      <span className="text-[11px] ml-1.5 font-medium">
+                        {walkInDebtResult?.lookupMethod === 'phone' ? (
+                          walkInDebtResult.previousDebt > 0 ? (
+                            <span className="text-amber-300" title={`Theo SĐT: ${customerPhone} (Đơn #${walkInDebtResult.matchedOrderNumber})`}>
+                              (Theo SĐT: +{formatCurrency(walkInDebtResult.previousDebt)})
+                            </span>
+                          ) : (
+                            <span className="text-emerald-400 font-mono">(SĐT mới: 0 ₫)</span>
+                          )
+                        ) : walkInDebtResult?.lookupMethod === 'name' ? (
+                          walkInDebtResult.previousDebt > 0 ? (
+                            <span className="text-amber-300" title={`Theo tên: ${guestName.trim()} (Đơn #${walkInDebtResult.matchedOrderNumber})`}>
+                              (Theo tên: +{formatCurrency(walkInDebtResult.previousDebt)})
+                            </span>
+                          ) : (
+                            <span className="text-emerald-400 font-mono">(Tên mới: 0 ₫)</span>
+                          )
+                        ) : (
+                          <span className="text-slate-400 font-mono">(Khách mới: 0 ₫)</span>
+                        )}
+                      </span>
+                    ) : (
+                      <span className="text-[11px] text-slate-400 ml-1.5">(Tự nạp theo khách)</span>
+                    )}
                   </div>
                   <div className="flex items-center gap-1">
                     <span className="text-amber-300 font-mono">+</span>

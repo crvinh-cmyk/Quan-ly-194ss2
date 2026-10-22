@@ -2,12 +2,13 @@ import React, { useState, useMemo } from 'react';
 import { Customer, Order, ProductCategory, WorkshopInfo, ArchivedDeletedCustomerRevenue } from '../types';
 import { FavoriteCustomersSection } from './FavoriteCustomersSection';
 import { formatCurrency, formatDateVN, getCustomerFacingName, isFreelanceWalkInPool, isRetailWalkInPool, isWalkInPoolCustomer } from '../utils/formatters';
-import { calculateCustomerDebt } from '../utils/storage';
+import { calculateCustomerDebt, sanitizeWalkInOrders } from '../utils/storage';
 import { isPartnerMode } from '../utils/partnerConfig';
 import {
   Users, Plus, Search, DollarSign, Phone, MapPin, CheckCircle2, History, Star,
   AlertCircle, Building2, Camera, User, Award, Crown, TrendingUp, Calendar,
-  ArrowUpDown, Sparkles, Edit3, Printer, Eye, X, ExternalLink, Trash2, Lock, Unlock
+  ArrowUpDown, Sparkles, Edit3, Printer, Eye, X, ExternalLink, Trash2, Lock, Unlock,
+  Check
 } from 'lucide-react';
 import { MoneyInput } from './MoneyInput';
 
@@ -19,6 +20,8 @@ interface CustomerManagementViewProps {
   onUpdateCustomer: (customer: Customer) => void;
   onDeleteCustomer?: (customerId: string) => void;
   onRecordDebtPayment: (customerId: string, amount: number, note: string) => void;
+  onUpdateOrder?: (order: Order) => void;
+  onPayOrderDebt?: (order: Order, amount?: number) => void;
   onViewCustomerOrders: (customerId: string) => void;
   onPrintOrder?: (order: Order) => void;
   archivedDeletedRevenues?: ArchivedDeletedCustomerRevenue[];
@@ -32,6 +35,8 @@ export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
   onUpdateCustomer,
   onDeleteCustomer,
   onRecordDebtPayment,
+  onUpdateOrder,
+  onPayOrderDebt,
   onViewCustomerOrders,
   onPrintOrder,
   archivedDeletedRevenues = []
@@ -58,6 +63,10 @@ export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
 
   // Modal viewing customer orders
   const [viewingOrdersCustomer, setViewingOrdersCustomer] = useState<Customer | null>(null);
+
+  // Modal thu tiền đơn hàng vãng lai (Khách lẻ & Freelance gom chung)
+  const [payingOrder, setPayingOrder] = useState<Order | null>(null);
+  const [payOrderAmount, setPayOrderAmount] = useState<number>(0);
   const [name, setName] = useState('');
   const [studioName, setStudioName] = useState('');
   const [customerType, setCustomerType] = useState<ProductCategory>('GIÁ STUDIO');
@@ -322,6 +331,11 @@ export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
   };
 
   const handleOpenPayDebt = (c: Customer) => {
+    // Với 2 tệp vãng lai, mở ngay modal Xem Đơn để người dùng chủ động xem và bấm "Đã thu tiền" từng đơn
+    if (isWalkInPoolCustomer(c)) {
+      setViewingOrdersCustomer(c);
+      return;
+    }
     const debt = calculateCustomerDebt(c.id, orders, customers);
     setPayModalCustomer(c);
     setPaymentAmount(debt);
@@ -332,6 +346,47 @@ export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
     if (!payModalCustomer || paymentAmount <= 0) return;
     onRecordDebtPayment(payModalCustomer.id, paymentAmount, paymentNote);
     setPayModalCustomer(null);
+  };
+
+  // Mở modal xác nhận đã thu tiền cho 1 đơn hàng vãng lai cụ thể
+  const handleOpenPayOrderModal = (order: Order) => {
+    setPayingOrder(order);
+    const remaining = order.totalDue > 0
+      ? order.totalDue
+      : Math.max(0, (order.subtotal - (order.discount || 0)) - (order.paid || 0));
+    setPayOrderAmount(remaining);
+  };
+
+  // Xác nhận đã thu tiền đơn hàng vãng lai
+  const handleConfirmPayOrder = () => {
+    if (!payingOrder) return;
+    const paymentAmt = payOrderAmount > 0
+      ? payOrderAmount
+      : (payingOrder.totalDue > 0 ? payingOrder.totalDue : Math.max(0, (payingOrder.subtotal - (payingOrder.discount || 0)) - (payingOrder.paid || 0)));
+
+    if (paymentAmt <= 0) {
+      setPayingOrder(null);
+      return;
+    }
+
+    const invoicedTotal = payingOrder.subtotal - (payingOrder.discount || 0);
+    const newPaid = (payingOrder.paid || 0) + paymentAmt;
+    const newTotalDue = Math.max(0, invoicedTotal - newPaid);
+    const updatedOrder: Order = {
+      ...payingOrder,
+      paid: newPaid,
+      totalDue: newTotalDue,
+      status: (newTotalDue === 0 ? 'completed' : payingOrder.status),
+      updatedAt: new Date().toISOString()
+    };
+
+    if (onUpdateOrder) {
+      onUpdateOrder(updatedOrder);
+    } else if (onPayOrderDebt) {
+      onPayOrderDebt(updatedOrder, paymentAmt);
+    }
+    showToast(`✅ Đã ghi nhận thu ${formatCurrency(paymentAmt)} cho đơn ${payingOrder.orderNumber}`);
+    setPayingOrder(null);
   };
 
   // Editing customer's yearly revenue preview
@@ -346,7 +401,7 @@ export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
     const isFlWalkIn = isFreelanceWalkInPool(viewingOrdersCustomer);
     const isKlWalkIn = isRetailWalkInPool(viewingOrdersCustomer);
 
-    return orders
+    const rawFiltered = orders
       .filter(o => {
         if (o.customerId === viewingOrdersCustomer.id) return true;
         if (isKlWalkIn && (
@@ -365,6 +420,14 @@ export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
         return false;
       })
       .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime() || b.createdAt.localeCompare(a.createdAt));
+
+    // Chuẩn hóa trạng thái nợ của 2 tệp vãng lai:
+    // Đánh dấu 'Đã thu' (hoàn tất, nợ = 0) cho toàn bộ các đơn cũ trước đó đã được đối trừ qua phiếu thu nợ
+    if (isWalkInPoolCustomer(viewingOrdersCustomer)) {
+      return sanitizeWalkInOrders(rawFiltered, viewingOrdersCustomer);
+    }
+
+    return rawFiltered;
   }, [viewingOrdersCustomer, orders]);
 
   return (
@@ -1310,20 +1373,42 @@ export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
                               )}
                             </td>
                             <td className="py-3 px-3 text-center">
-                              {onPrintOrder && (
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setViewingOrdersCustomer(null);
-                                    onPrintOrder(ord);
-                                  }}
-                                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-[11px] shadow-2xs transition cursor-pointer"
-                                  title="Mở cửa sổ in phiếu & chụp ảnh gửi khách"
-                                >
-                                  <Printer className="w-3 h-3" />
-                                  <span>In / Chụp ảnh</span>
-                                </button>
-                              )}
+                              <div className="flex items-center justify-center gap-1.5 flex-wrap">
+                                {/* Tính năng "Đã thu tiền" CHỈ thực hiện trên 2 tệp khách: "Khách lẻ" và "Tổng hợp Freelance Doanh số ít" */}
+                                {viewingOrdersCustomer && isWalkInPoolCustomer(viewingOrdersCustomer) && (
+                                  ord.totalDue > 0 ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleOpenPayOrderModal(ord)}
+                                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[11px] shadow-2xs transition cursor-pointer"
+                                      title="Ghi nhận đã thu đủ tiền cho đơn hàng này"
+                                    >
+                                      <CheckCircle2 className="w-3.5 h-3.5" />
+                                      <span>Đã thu tiền</span>
+                                    </button>
+                                  ) : (
+                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 font-bold text-[11px] border border-emerald-200">
+                                      <Check className="w-3 h-3 text-emerald-600" />
+                                      <span>Đã thu</span>
+                                    </span>
+                                  )
+                                )}
+
+                                {onPrintOrder && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setViewingOrdersCustomer(null);
+                                      onPrintOrder(ord);
+                                    }}
+                                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-[11px] shadow-2xs transition cursor-pointer"
+                                    title="Mở cửa sổ in phiếu & chụp ảnh gửi khách"
+                                  >
+                                    <Printer className="w-3 h-3" />
+                                    <span>In / Chụp ảnh</span>
+                                  </button>
+                                )}
+                              </div>
                             </td>
                           </tr>
                         );
@@ -1359,6 +1444,107 @@ export const CustomerManagementView: React.FC<CustomerManagementViewProps> = ({
                 className="px-4 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-xs font-bold transition cursor-pointer"
               >
                 Đóng
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Thu Tiền Đơn Hàng Vãng Lai (Chỉ dành cho Khách Lẻ & Freelance gom chung) */}
+      {payingOrder && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden border border-slate-200 animate-in fade-in zoom-in-95 duration-150">
+            <div className="p-4 bg-emerald-600 text-white flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-emerald-500 rounded-xl text-white">
+                  <CheckCircle2 className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-sm sm:text-base">Thu Tiền Đơn Hàng Vãng Lai</h3>
+                  <p className="text-xs text-emerald-100 mt-0.5">
+                    Mã đơn: <strong className="font-mono text-white">{payingOrder.orderNumber}</strong> ({formatDateVN(payingOrder.date)})
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPayingOrder(null)}
+                className="p-1 rounded-lg text-emerald-200 hover:text-white hover:bg-emerald-700 transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-4 space-y-3.5 text-xs">
+              <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-500">Khách đặt hàng:</span>
+                  <span className="font-bold text-slate-900">{payingOrder.customerName}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-500">Tên khi gửi khách:</span>
+                  <span className="font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                    {getCustomerFacingName(payingOrder)}
+                  </span>
+                </div>
+                {payingOrder.customerPhone && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-500">Số điện thoại:</span>
+                    <span className="font-mono font-bold text-slate-800">{payingOrder.customerPhone}</span>
+                  </div>
+                )}
+                <div className="flex items-center justify-between pt-1 border-t border-slate-200/80">
+                  <span className="text-slate-500">Tổng tiền đơn hàng:</span>
+                  <span className="font-mono font-bold text-slate-800">
+                    {formatCurrency(payingOrder.subtotal - (payingOrder.discount || 0))}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-500">Đã thanh toán trước:</span>
+                  <span className="font-mono text-slate-600">
+                    {formatCurrency(payingOrder.paid || 0)}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between pt-1 border-t border-slate-200 font-bold">
+                  <span className="text-red-600">Số nợ còn lại của đơn:</span>
+                  <span className="font-mono text-base text-red-600">
+                    {formatCurrency(payingOrder.totalDue > 0 ? payingOrder.totalDue : Math.max(0, (payingOrder.subtotal - (payingOrder.discount || 0)) - (payingOrder.paid || 0)))}
+                  </span>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-slate-700 font-bold mb-1">
+                  Số tiền thực thu (VNĐ):
+                </label>
+                <MoneyInput
+                  value={payOrderAmount}
+                  onChange={(val) => setPayOrderAmount(val)}
+                  className="w-full font-mono font-bold text-base text-emerald-700 py-2"
+                  placeholder="Nhập số tiền..."
+                />
+                <p className="text-[11px] text-slate-500 mt-1">
+                  💡 Mặc định thu đủ toàn bộ số tiền còn nợ của đơn này. Hệ thống sẽ tự động trừ số nợ tương ứng khỏi tổng nợ của tệp khách.
+                </p>
+              </div>
+            </div>
+
+            <div className="p-3 bg-slate-50 border-t border-slate-200 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setPayingOrder(null)}
+                className="px-3.5 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-200 rounded-xl transition cursor-pointer"
+              >
+                Hủy bỏ
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmPayOrder}
+                disabled={payOrderAmount <= 0}
+                className="px-4 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-300 disabled:cursor-not-allowed rounded-xl shadow-xs cursor-pointer flex items-center gap-1.5 transition"
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                <span>Xác Nhận Đã Thu {formatCurrency(payOrderAmount)}</span>
               </button>
             </div>
           </div>
