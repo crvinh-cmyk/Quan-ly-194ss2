@@ -30,6 +30,32 @@ import {
 } from '../utils/productHelpers';
 import { isPartnerMode } from '../utils/partnerConfig';
 
+export interface GroupedMdfSlipItem {
+  id: string;
+  materialId: string;
+  materialCode: string;
+  materialName: string;
+  materialCategory: string;
+  unit: string;
+  totalQuantity: number;
+  calculatedQuantity: number;
+  hasQuantityOverride: boolean;
+  currentStock: number;
+  previouslyDeducted: number;
+  effectiveBaseStock: number;
+  remainingStock: number;
+  sourceProducts: {
+    rowId?: string;
+    productName: string;
+    productCode?: string;
+    size: string;
+    quantity: number;
+    isManual?: boolean;
+  }[];
+  sourceRowIds: string[];
+  isManualOnly: boolean;
+}
+
 interface SalesInvoiceFormProps {
   products: Product[];
   customers: Customer[];
@@ -82,6 +108,8 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
 
   // MDF Dispatch Slip state
   const [manualMdfOverrides, setManualMdfOverrides] = useState<Record<string, { materialId: string; quantity?: number }>>({});
+  const [manualGroupQuantityOverrides, setManualGroupQuantityOverrides] = useState<Record<string, number>>({});
+  const [manualMaterialRemaps, setManualMaterialRemaps] = useState<Record<string, string>>({});
   const [manualExtraMdfItems, setManualExtraMdfItems] = useState<{
     id: string;
     materialId: string;
@@ -669,6 +697,8 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
     setPreviousDebt(0);
     setPaid(0);
     setManualMdfOverrides({});
+    setManualGroupQuantityOverrides({});
+    setManualMaterialRemaps({});
     setManualExtraMdfItems([]);
     setExcludedSourceRowIds([]);
     setItems([{
@@ -790,78 +820,83 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
     return materials.filter(m => m.category === 'Gỗ MDF' || m.category === 'Fomex siêu nhẹ');
   }, [materials]);
 
-  // Compute live items for "Phiếu xuất ván MDF & Fomex"
-  const mdfSlipItems = useMemo(() => {
-    const list: {
-      id: string;
-      sourceRowId?: string;
-      sourceItemName: string;
-      size: string;
-      materialId: string;
-      materialCode: string;
-      materialName: string;
-      materialCategory: string;
-      unit: string;
-      quantity: number;
-      currentStock: number;
-      remainingStock: number;
-      isManual?: boolean;
-      date?: string;
-    }[] = [];
+  // Tính toán số lượng vật tư đơn cũ đã trừ (nếu đang ở chế độ sửa / bổ sung đơn hàng như #194-2026-067)
+  const editingOrderPrevDeductions = useMemo(() => {
+    const activeOrder = editingOrder || (editingInvoiceId ? allOrders.find(o => o.id === editingInvoiceId) : null);
+    const map: Record<string, number> = {};
+    if (!activeOrder) return map;
 
-    // 1. Scan valid invoice rows and map to required board (Fomex for 4K/HD Pro, MDF for other photos, NONE for in/inep/album/khung)
+    if (activeOrder.materialsDeducted && Array.isArray(activeOrder.materialsDeducted) && activeOrder.materialsDeducted.length > 0) {
+      activeOrder.materialsDeducted.forEach(item => {
+        if (item.materialId && item.quantity > 0) {
+          map[item.materialId] = (map[item.materialId] || 0) + item.quantity;
+        }
+      });
+    } else if (activeOrder.items && Array.isArray(activeOrder.items)) {
+      activeOrder.items.forEach(it => {
+        if (!it.quantity || it.quantity <= 0) return;
+        const resolved = resolveProductCoreMaterial(it, materials, products);
+        if (resolved.materialCoreId && resolved.materialCoreCode !== 'NONE') {
+          map[resolved.materialCoreId] = (map[resolved.materialCoreId] || 0) + it.quantity;
+        }
+      });
+    }
+    return map;
+  }, [editingOrder, editingInvoiceId, allOrders, materials, products]);
+
+  // Compute live items for "Phiếu xuất ván MDF & Fomex" - GOM NHÓM (GROUP BY) THEO TỪNG MÃ CỐT VÁN
+  const mdfSlipItems = useMemo<GroupedMdfSlipItem[]>(() => {
+    interface DemandItem {
+      materialId: string;
+      quantity: number;
+      sourceRowId?: string;
+      productName: string;
+      productCode?: string;
+      size: string;
+      isManual?: boolean;
+    }
+
+    const demands: DemandItem[] = [];
+
+    // 1. Quét từng dòng hóa đơn hợp lệ để bóc tách nhu cầu ván cốt
     items.forEach((row, idx) => {
       if (excludedSourceRowIds.includes(row.id)) return;
       if (!row.quantity || row.quantity <= 0) return;
       if (!row.productCode && !row.productName && !row.size && row.price <= 0) return;
 
-      // 1. ƯU TIÊN SỐ 1: Kiểm tra Cốt Vật Tư Tương Thích (materialCoreCode)
-      // Được tự động nhập từ Bảng Giá hoặc chọn thủ công trên dòng hóa đơn
+      // Ưu tiên 1: Mã cốt vật tư tương thích (materialCoreCode)
       const matchedProd = products.find(p => p.code.toUpperCase().trim() === row.productCode.toUpperCase().trim());
       const explicitCoreCode = (row.materialCoreCode || matchedProd?.materialCoreCode || '').trim();
       const explicitCoreId = row.materialCoreId || matchedProd?.materialCoreId;
 
       if (explicitCoreCode) {
         const upperCore = explicitCoreCode.toUpperCase();
-        // Nếu là NONE -> Tuyệt đối không trừ bất kỳ cốt ván nào
         if (upperCore === 'NONE' || upperCore === 'KHONG' || upperCore === 'KHONG_COT' || upperCore === '0') {
           return;
         }
 
-        // Tìm chính xác vật tư trong kho theo mã hoặc ID
         const exactMat = materials.find(m => m.code.toUpperCase() === upperCore || (explicitCoreId && m.id === explicitCoreId));
         if (exactMat) {
-          const override = manualMdfOverrides[row.id];
-          const selectedMat = override?.materialId ? materials.find(m => m.id === override.materialId) || exactMat : exactMat;
-          const qty = override?.quantity !== undefined ? override.quantity : row.quantity;
-          const currentStock = selectedMat.stockQuantity;
-          const remainingStock = Math.round((currentStock - qty) * 100) / 100;
+          const rowOverride = manualMdfOverrides[row.id];
+          const selectedMat = rowOverride?.materialId ? materials.find(m => m.id === rowOverride.materialId) || exactMat : exactMat;
+          const qty = rowOverride?.quantity !== undefined ? rowOverride.quantity : row.quantity;
           const displayTitle = row.productName || row.productCode || `Ảnh dòng #${idx + 1}`;
+          const effectiveSize = row.size || extractEffectiveSize(row.size, row.productName, row.productCode) || 'Tiêu chuẩn';
 
-          list.push({
-            id: `slip-row-${row.id}`,
-            sourceRowId: row.id,
-            sourceItemName: displayTitle,
-            size: row.size || extractEffectiveSize(row.size, row.productName, row.productCode) || 'Tiêu chuẩn',
+          demands.push({
             materialId: selectedMat.id,
-            materialCode: selectedMat.code,
-            materialName: selectedMat.name,
-            materialCategory: selectedMat.category,
-            unit: selectedMat.unit || 'Tấm',
             quantity: qty,
-            currentStock,
-            remainingStock,
-            isManual: false,
-            date: row.date || orderDate
+            sourceRowId: row.id,
+            productName: displayTitle,
+            productCode: row.productCode,
+            size: effectiveSize,
+            isManual: false
           });
           return;
         }
       }
 
-      // 2. Phân loại cốt vật tư dự phòng (Fallback nếu chưa cấu hình mã cốt cụ thể):
-      // - 'none': In ảnh, In ép, Khung gia cố (NEP), Album mở phẳng, Photobook... -> BỎ TRỐNG CỐT, KHÔNG TRỪ VÁN
-      // - 'fomex': DUY NHẤT dành cho Ảnh 4K và Ảnh HD Pro -> Cốt Fomex 9li siêu nhẹ
-      // - 'mdf': Tất cả các dòng ảnh còn lại (HD Gương Siêu Bóng, Lụa Viền, Mika, Lụa Khung, Ép Gỗ, Tráng Gương, Pha Lê...) -> Cốt Ván Gỗ MDF
+      // Ưu tiên 2: Fallback theo nhóm sản phẩm (Fomex cho 4K/HD Pro, MDF cho ảnh khác, none cho in/inep)
       const coreType = getProductCoreType({
         code: row.productCode,
         name: row.productName,
@@ -875,19 +910,17 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
 
       const effectiveSize = extractEffectiveSize(row.size, row.productName, row.productCode);
       const normSize = normalizeSize(effectiveSize);
-
       const targetCategory = coreType === 'fomex' ? 'Fomex siêu nhẹ' : 'Gỗ MDF';
       const candidateMaterials = materials.filter(m => m.category === targetCategory);
 
       let selectedMat: Material | undefined;
-      const override = manualMdfOverrides[row.id];
+      const rowOverride = manualMdfOverrides[row.id];
 
-      if (override?.materialId) {
-        selectedMat = materials.find(m => m.id === override.materialId);
+      if (rowOverride?.materialId) {
+        selectedMat = materials.find(m => m.id === rowOverride.materialId);
       }
 
       if (!selectedMat) {
-        // Auto-match board material by size in candidate category
         selectedMat = candidateMaterials.find(m => {
           const normCode = normalizeSize(m.code);
           const normName = normalizeSize(m.name);
@@ -905,91 +938,178 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
       }
 
       if (selectedMat) {
-        const qty = override?.quantity !== undefined ? override.quantity : row.quantity;
-        const currentStock = selectedMat.stockQuantity;
-        const remainingStock = Math.round((currentStock - qty) * 100) / 100;
+        const qty = rowOverride?.quantity !== undefined ? rowOverride.quantity : row.quantity;
         const displayTitle = row.productName || row.productCode || `Ảnh dòng #${idx + 1}`;
 
-        list.push({
-          id: `slip-row-${row.id}`,
-          sourceRowId: row.id,
-          sourceItemName: displayTitle,
-          size: effectiveSize || row.size || 'Tiêu chuẩn',
+        demands.push({
           materialId: selectedMat.id,
-          materialCode: selectedMat.code,
-          materialName: selectedMat.name,
-          materialCategory: selectedMat.category,
-          unit: selectedMat.unit || 'Tấm',
           quantity: qty,
-          currentStock,
-          remainingStock,
-          isManual: false,
-          date: row.date || orderDate
+          sourceRowId: row.id,
+          productName: displayTitle,
+          productCode: row.productCode,
+          size: effectiveSize || row.size || 'Tiêu chuẩn',
+          isManual: false
         });
       }
     });
 
-    // 2. Add manual extra MDF or Fomex items
+    // 2. Nạp thêm các dòng ván thủ công
     manualExtraMdfItems.forEach((extra, idx) => {
       const mat = materials.find(m => m.id === extra.materialId) || allBoardMaterials[0] || mdfMaterials[0];
       if (mat) {
-        const remaining = Math.round((mat.stockQuantity - extra.quantity) * 100) / 100;
-        list.push({
-          id: extra.id,
-          sourceItemName: extra.note || `Ván/Fomex xuất thêm #${idx + 1}`,
-          size: extractEffectiveSize('', mat.name, mat.code) || 'Tùy chọn',
+        demands.push({
           materialId: mat.id,
-          materialCode: mat.code,
-          materialName: mat.name,
-          materialCategory: mat.category,
-          unit: mat.unit || 'Tấm',
           quantity: extra.quantity,
-          currentStock: mat.stockQuantity,
-          remainingStock: remaining,
-          isManual: true,
-          date: isEditMode ? getTodayDateString() : orderDate
+          sourceRowId: extra.id,
+          productName: extra.note || `Ván/Fomex xuất thêm #${idx + 1}`,
+          size: extractEffectiveSize('', mat.name, mat.code) || 'Tùy chọn',
+          isManual: true
         });
       }
     });
 
-    return list;
-  }, [items, materials, mdfMaterials, fomexMaterials, allBoardMaterials, manualMdfOverrides, manualExtraMdfItems, excludedSourceRowIds]);
+    // 3. Áp dụng thay đổi chọn mã vật tư cho nhóm (manualMaterialRemaps)
+    const remappedDemands = demands.map(d => {
+      const remappedId = manualMaterialRemaps[d.materialId];
+      if (remappedId && remappedId !== d.materialId) {
+        return { ...d, materialId: remappedId };
+      }
+      return d;
+    });
 
-  const totalMdfBoards = mdfSlipItems.reduce((sum, it) => sum + (it.quantity || 0), 0);
+    // 4. GOM NHÓM (GROUP BY) THEO TỪNG MÃ CỐT VÁN (materialId)
+    const groupMap = new Map<string, {
+      materialId: string;
+      calculatedQty: number;
+      sourceProducts: {
+        rowId?: string;
+        productName: string;
+        productCode?: string;
+        size: string;
+        quantity: number;
+        isManual?: boolean;
+      }[];
+      sourceRowIds: string[];
+      hasOnlyManual: boolean;
+    }>();
 
-  // MDF slip interaction handlers
-  const handleChangeMdfMaterial = (rowKey: string, newMatId: string) => {
-    if (rowKey.startsWith('slip-row-')) {
-      const sourceRowId = rowKey.replace('slip-row-', '');
-      setManualMdfOverrides(prev => ({
-        ...prev,
-        [sourceRowId]: { ...prev[sourceRowId], materialId: newMatId }
-      }));
-    } else {
-      setManualExtraMdfItems(prev => prev.map(item => item.id === rowKey ? { ...item, materialId: newMatId } : item));
+    remappedDemands.forEach(d => {
+      let g = groupMap.get(d.materialId);
+      if (!g) {
+        g = {
+          materialId: d.materialId,
+          calculatedQty: 0,
+          sourceProducts: [],
+          sourceRowIds: [],
+          hasOnlyManual: true
+        };
+        groupMap.set(d.materialId, g);
+      }
+      g.calculatedQty += d.quantity;
+      if (d.sourceRowId) {
+        g.sourceRowIds.push(d.sourceRowId);
+      }
+      if (!d.isManual) {
+        g.hasOnlyManual = false;
+      }
+      g.sourceProducts.push({
+        rowId: d.sourceRowId,
+        productName: d.productName,
+        productCode: d.productCode,
+        size: d.size,
+        quantity: d.quantity,
+        isManual: d.isManual
+      });
+    });
+
+    // 5. Tính toán Tồn hiện tại, Hoàn trả đơn cũ, và Tồn sau đơn chính xác
+    const result: GroupedMdfSlipItem[] = [];
+
+    groupMap.forEach((g, matId) => {
+      const mat = materials.find(m => m.id === matId);
+      if (!mat) return;
+
+      const hasOverride = manualGroupQuantityOverrides[matId] !== undefined;
+      const totalQuantity = hasOverride ? Math.max(1, manualGroupQuantityOverrides[matId]) : g.calculatedQty;
+
+      const previouslyDeducted = editingOrderPrevDeductions[matId] || 0;
+      const effectiveBaseStock = mat.stockQuantity + (isEditMode ? previouslyDeducted : 0);
+      const remainingStock = Math.round((effectiveBaseStock - totalQuantity) * 100) / 100;
+
+      result.push({
+        id: `group-${matId}`,
+        materialId: mat.id,
+        materialCode: mat.code,
+        materialName: mat.name,
+        materialCategory: mat.category,
+        unit: mat.unit || 'Tấm',
+        totalQuantity,
+        calculatedQuantity: g.calculatedQty,
+        hasQuantityOverride: hasOverride,
+        currentStock: mat.stockQuantity,
+        previouslyDeducted,
+        effectiveBaseStock,
+        remainingStock,
+        sourceProducts: g.sourceProducts,
+        sourceRowIds: g.sourceRowIds,
+        isManualOnly: g.hasOnlyManual
+      });
+    });
+
+    return result;
+  }, [
+    items,
+    materials,
+    products,
+    mdfMaterials,
+    fomexMaterials,
+    allBoardMaterials,
+    manualMdfOverrides,
+    manualGroupQuantityOverrides,
+    manualMaterialRemaps,
+    manualExtraMdfItems,
+    excludedSourceRowIds,
+    editingOrderPrevDeductions,
+    isEditMode
+  ]);
+
+  const totalMdfBoards = mdfSlipItems.reduce((sum, it) => sum + (it.totalQuantity || 0), 0);
+
+  // MDF slip interaction handlers (thao tác trực tiếp trên nhóm cốt ván)
+  const handleChangeGroupMaterial = (oldMatId: string, newMatId: string) => {
+    if (oldMatId === newMatId) return;
+    setManualMaterialRemaps(prev => ({
+      ...prev,
+      [oldMatId]: newMatId
+    }));
+    if (manualGroupQuantityOverrides[oldMatId] !== undefined) {
+      setManualGroupQuantityOverrides(prev => {
+        const next = { ...prev };
+        next[newMatId] = next[oldMatId];
+        delete next[oldMatId];
+        return next;
+      });
     }
   };
 
-  const handleChangeMdfQuantity = (rowKey: string, newQty: number) => {
+  const handleChangeGroupQuantity = (matId: string, newQty: number) => {
     const qty = Math.max(1, newQty);
-    if (rowKey.startsWith('slip-row-')) {
-      const sourceRowId = rowKey.replace('slip-row-', '');
-      setManualMdfOverrides(prev => ({
-        ...prev,
-        [sourceRowId]: { ...prev[sourceRowId], quantity: qty }
-      }));
-    } else {
-      setManualExtraMdfItems(prev => prev.map(item => item.id === rowKey ? { ...item, quantity: qty } : item));
-    }
+    setManualGroupQuantityOverrides(prev => ({
+      ...prev,
+      [matId]: qty
+    }));
   };
 
-  const handleRemoveMdfItem = (rowKey: string) => {
-    if (rowKey.startsWith('slip-row-')) {
-      const sourceRowId = rowKey.replace('slip-row-', '');
-      setExcludedSourceRowIds(prev => [...prev, sourceRowId]);
-    } else {
-      setManualExtraMdfItems(prev => prev.filter(item => item.id !== rowKey));
+  const handleRemoveGroup = (group: GroupedMdfSlipItem) => {
+    if (group.sourceRowIds.length > 0) {
+      setExcludedSourceRowIds(prev => [...prev, ...group.sourceRowIds]);
     }
+    setManualExtraMdfItems(prev => prev.filter(extra => extra.materialId !== group.materialId));
+    setManualGroupQuantityOverrides(prev => {
+      const next = { ...prev };
+      delete next[group.materialId];
+      return next;
+    });
   };
 
   const handleAddManualMdfItem = () => {
@@ -1006,6 +1126,8 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
 
   const handleResetMdfSlip = () => {
     setManualMdfOverrides({});
+    setManualGroupQuantityOverrides({});
+    setManualMaterialRemaps({});
     setManualExtraMdfItems([]);
     setExcludedSourceRowIds([]);
   };
@@ -1033,8 +1155,8 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
           materialCode: it.materialCode,
           materialName: it.materialName,
           unit: it.unit || 'Tấm',
-          quantity: it.quantity,
-          date: it.date || orderDate
+          quantity: it.totalQuantity,
+          date: orderDate
         }))
       : [];
 
@@ -2189,7 +2311,7 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
                         return (
                           <div
                             key={item.id}
-                            className={`p-3 rounded-xl border text-xs space-y-2 transition ${
+                            className={`p-3 rounded-xl border text-xs space-y-2.5 transition ${
                               isOut
                                 ? 'bg-rose-950/40 border-rose-700/60'
                                 : isLow
@@ -2197,31 +2319,39 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
                                 : 'bg-slate-800/80 border-slate-700/80 hover:border-slate-600'
                             }`}
                           >
-                            {/* Row context & title */}
-                            <div className="flex items-center justify-between text-xs">
-                              <div className="flex items-center gap-2 flex-wrap">
-                                <span className="font-mono text-[10px] px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 font-bold">
+                            {/* Group Header: Board title, category badge, shared products count */}
+                            <div className="flex items-center justify-between text-xs gap-2">
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 font-bold">
                                   #{idx + 1}
                                 </span>
-                                <span className="font-bold text-slate-200 truncate max-w-[220px] sm:max-w-xs" title={item.sourceItemName}>
-                                  {item.sourceItemName}
+                                <span className="font-bold text-slate-100 font-mono">
+                                  [{item.materialCode}]
                                 </span>
-                                {item.size && (
-                                  <span className="px-1.5 py-0.2 rounded bg-slate-700/90 text-amber-200 font-mono text-[10px] font-semibold border border-slate-600/60">
-                                    Khổ ảnh: {item.size}
-                                  </span>
-                                )}
+                                <span className="font-bold text-slate-200 truncate max-w-[200px] sm:max-w-xs" title={item.materialName}>
+                                  {item.materialName}
+                                </span>
                                 {item.materialCategory === 'Fomex siêu nhẹ' ? (
-                                  <span className="px-1.5 py-0.2 rounded bg-blue-500/20 text-blue-300 font-mono text-[10px] font-bold border border-blue-500/40">
+                                  <span className="px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-300 font-mono text-[10px] font-bold border border-blue-500/40">
                                     🪶 Fomex 9li (4K/HD Pro)
                                   </span>
                                 ) : (
-                                  <span className="px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 font-mono text-[10px] font-bold border border-amber-500/40">
+                                  <span className="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 font-mono text-[10px] font-bold border border-amber-500/40">
                                     🪵 Ván MDF
                                   </span>
                                 )}
-                                {item.isManual && (
-                                  <span className="px-1.5 py-0.2 rounded bg-purple-500/20 text-purple-300 font-mono text-[10px]">
+                                {item.sourceProducts.length > 1 && (
+                                  <span className="px-1.5 py-0.5 rounded bg-amber-400/25 text-amber-200 font-bold text-[10px] border border-amber-400/40 flex items-center gap-1">
+                                    <span>👥 {item.sourceProducts.length} sản phẩm dùng chung</span>
+                                  </span>
+                                )}
+                                {isEditMode && item.previouslyDeducted > 0 && (
+                                  <span className="px-1.5 py-0.5 rounded bg-indigo-500/25 text-indigo-300 font-bold text-[10px] border border-indigo-400/30 flex items-center gap-0.5">
+                                    <span>🔄 Hoàn trả +{item.previouslyDeducted} đơn cũ</span>
+                                  </span>
+                                )}
+                                {item.isManualOnly && (
+                                  <span className="px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300 font-mono text-[10px]">
                                     Thủ công
                                   </span>
                                 )}
@@ -2229,23 +2359,48 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
 
                               <button
                                 type="button"
-                                onClick={() => handleRemoveMdfItem(item.id)}
+                                onClick={() => handleRemoveGroup(item)}
                                 className="text-slate-400 hover:text-rose-400 p-1 rounded-md hover:bg-slate-700/50 transition cursor-pointer"
-                                title="Bỏ dòng xuất ván này"
+                                title="Bỏ nhóm xuất ván này"
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
                               </button>
                             </div>
 
+                            {/* Source Products Breakdown (Dùng cho các sản phẩm nào trong đơn) */}
+                            {item.sourceProducts.length > 0 && (
+                              <div className="bg-slate-900/60 rounded-lg p-2 border border-slate-700/60 space-y-1">
+                                <div className="text-[10px] text-slate-400 font-semibold flex items-center justify-between">
+                                  <span>Dùng cho các dòng sản phẩm trong đơn:</span>
+                                  <span className="text-amber-300 font-mono font-bold">
+                                    Tổng định mức: {item.calculatedQuantity} {item.unit}
+                                    {item.hasQuantityOverride && ` (chỉnh tay: ${item.totalQuantity})`}
+                                  </span>
+                                </div>
+                                <div className="flex flex-wrap gap-1.5 pt-0.5">
+                                  {item.sourceProducts.map((sp, spIdx) => (
+                                    <span
+                                      key={spIdx}
+                                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-slate-800 text-slate-200 text-[11px] border border-slate-700 font-medium"
+                                    >
+                                      <span className="text-amber-200 font-semibold">{sp.productName}</span>
+                                      {sp.size && <span className="text-slate-400 font-mono text-[10px]">({sp.size})</span>}
+                                      <span className="text-emerald-400 font-mono font-bold">x{sp.quantity}</span>
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+
                             {/* Board selector & Quantity */}
                             <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-center">
                               <div className="sm:col-span-8">
                                 <label className="text-[10px] text-slate-400 block mb-0.5">
-                                  Loại cốt ván MDF / Fomex & Mã vật tư trong kho:
+                                  Đổi mã cốt ván kho cho toàn bộ nhóm này (nếu cần):
                                 </label>
                                 <select
                                   value={item.materialId}
-                                  onChange={(e) => handleChangeMdfMaterial(item.id, e.target.value)}
+                                  onChange={(e) => handleChangeGroupMaterial(item.materialId, e.target.value)}
                                   className="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-xs font-semibold text-amber-200 focus:border-amber-400 outline-hidden cursor-pointer"
                                 >
                                   {fomexMaterials.length > 0 && (
@@ -2271,12 +2426,12 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
 
                               <div className="sm:col-span-4">
                                 <label className="text-[10px] text-slate-400 block mb-0.5">
-                                  Số lượng ván dùng:
+                                  Tổng số lượng ván xuất:
                                 </label>
                                 <div className="flex items-center gap-1.5">
                                   <button
                                     type="button"
-                                    onClick={() => handleChangeMdfQuantity(item.id, item.quantity - 1)}
+                                    onClick={() => handleChangeGroupQuantity(item.materialId, item.totalQuantity - 1)}
                                     className="w-7 h-7 flex items-center justify-center bg-slate-700 hover:bg-slate-600 rounded-lg text-white font-bold cursor-pointer transition text-xs"
                                   >
                                     -
@@ -2284,31 +2439,36 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
                                   <input
                                     type="number"
                                     min="1"
-                                    value={item.quantity || ''}
-                                    onChange={(e) => handleChangeMdfQuantity(item.id, parseInt(e.target.value, 10) || 1)}
+                                    value={item.totalQuantity || ''}
+                                    onChange={(e) => handleChangeGroupQuantity(item.materialId, parseInt(e.target.value, 10) || 1)}
                                     className="w-14 px-1 py-1 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono font-black text-center text-white focus:border-amber-400 outline-hidden"
                                   />
                                   <button
                                     type="button"
-                                    onClick={() => handleChangeMdfQuantity(item.id, item.quantity + 1)}
+                                    onClick={() => handleChangeGroupQuantity(item.materialId, item.totalQuantity + 1)}
                                     className="w-7 h-7 flex items-center justify-center bg-slate-700 hover:bg-slate-600 rounded-lg text-white font-bold cursor-pointer transition text-xs"
                                   >
                                     +
                                   </button>
-                                  <span className="text-xs text-slate-300 font-medium">tấm</span>
+                                  <span className="text-xs text-slate-300 font-medium">{item.unit}</span>
                                 </div>
                               </div>
                             </div>
 
-                            {/* Inventory Status Bar */}
+                            {/* Inventory Status Bar: Live stock progression */}
                             <div className="flex flex-wrap items-center justify-between text-[11px] pt-1.5 border-t border-slate-700/60 font-mono gap-1">
-                              <div className="flex items-center gap-2">
+                              <div className="flex items-center gap-1.5 flex-wrap">
                                 <span className="text-slate-400">
-                                  Tồn kho hiện có: <strong className="text-slate-200">{item.currentStock}</strong> tấm
+                                  Tồn hiện có: <strong className="text-slate-200">{item.currentStock}</strong> {item.unit}
                                 </span>
+                                {isEditMode && item.previouslyDeducted > 0 && (
+                                  <span className="text-indigo-300 font-semibold">
+                                    (+{item.previouslyDeducted} từ đơn cũ = {item.effectiveBaseStock})
+                                  </span>
+                                )}
                                 <span>➔</span>
                                 <span className="text-slate-400">
-                                  Sau đơn: <strong className={isOut || isLow ? 'text-red-400 font-black' : 'text-emerald-400 font-bold'}>{item.remainingStock}</strong> tấm
+                                  Sau đơn: <strong className={isOut || isLow ? 'text-red-400 font-black' : 'text-emerald-400 font-bold'}>{item.remainingStock}</strong> {item.unit}
                                 </span>
                               </div>
 
@@ -2355,7 +2515,11 @@ export const SalesInvoiceForm: React.FC<SalesInvoiceFormProps> = ({
                         <Plus className="w-3.5 h-3.5 text-amber-400" />
                         + Thêm ván xuất thủ công
                       </button>
-                      {(Object.keys(manualMdfOverrides).length > 0 || manualExtraMdfItems.length > 0 || excludedSourceRowIds.length > 0) && (
+                      {(Object.keys(manualMdfOverrides).length > 0 ||
+                        Object.keys(manualGroupQuantityOverrides).length > 0 ||
+                        Object.keys(manualMaterialRemaps).length > 0 ||
+                        manualExtraMdfItems.length > 0 ||
+                        excludedSourceRowIds.length > 0) && (
                         <button
                           type="button"
                           onClick={handleResetMdfSlip}

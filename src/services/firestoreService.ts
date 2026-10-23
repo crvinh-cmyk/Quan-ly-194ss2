@@ -12,6 +12,7 @@ import {
 import { db } from '../firebase/config';
 import { Product, Customer, Order, Material, StockImportReceipt, StockImportItem, WorkshopInfo, StudioCombo, ProductCostItem, ProductCostMap, RetailProductCostItem, RetailProductCostMap, InkImportRecord, InkColorCode, S1aDayOverride, S1aManualEntry, BoardCorePriceRow, BoardCorePriceMap, AccessoryMaterialItem, AccessoryMaterialMap, PaperMaterialItem, PaperMaterialMap, ArchivedDeletedCustomerRevenue, MonthOtherExpenses, OtherExpensesMap } from '../types';
 import { DEFAULT_WORKSHOP_INFO, DEFAULT_INK_IMPORTS } from '../data/initialData';
+import { resolveProductCoreMaterial } from '../utils/materialBOM';
 
 // User info interface for tagging created/updated records
 export interface AuthUserContext {
@@ -330,41 +331,61 @@ export async function saveOrderToFirestore(
 }
 
 /**
- * Lưu hoặc Cập nhật đơn hàng an toàn với Firestore Transaction / Batch:
- * Khi cập nhật/bổ sung đơn hàng:
- * 1. Hoàn trả (restore) toàn bộ số lượng vật tư / cốt ván đã trừ của hóa đơn cũ vào kho.
- * 2. Trừ toàn bộ số lượng vật tư / cốt ván mới theo danh sách hàng hóa bổ sung của hóa đơn mới.
- * 3. Đảm bảo tính nhất quán dữ liệu tồn kho, tránh trừ trùng lặp hoặc mất mát số lượng.
+ * Lưu hoặc Cập nhật đơn hàng an toàn với Firestore Transaction (runTransaction):
+ * Khi cập nhật/bổ sung đơn hàng (như khách bổ sung thêm sản phẩm vào đơn cũ):
+ * 1. Hoàn trả (restore) toàn bộ số lượng ván đã trừ của đơn cũ về kho trước.
+ * 2. Sau đó mới trừ số lượng ván theo danh sách mới.
+ * 3. Dùng Firestore Transaction (runTransaction) khi cập nhật để tránh trường hợp các đơn khác
+ *    phát sinh cùng lúc làm sai lệch số lượng tồn kho.
  */
 export async function saveOrUpdateOrderWithInventoryTransaction(
   order: Order,
   previousOrder?: Order | null,
   user?: AuthUserContext | null,
-  currentMaterials?: Material[]
+  currentMaterials?: Material[],
+  catalogProducts?: Product[]
 ): Promise<void> {
+  const orderDocRef = doc(db, COLLECTIONS.ORDERS, order.id);
+
+  // 1. Phân tích số lượng ván đã trừ của hóa đơn cũ (nếu có)
   const prevDeductions: Record<string, number> = {};
-  if (previousOrder?.materialsDeducted && Array.isArray(previousOrder.materialsDeducted)) {
-    for (const d of previousOrder.materialsDeducted) {
-      if (d.materialId) {
-        prevDeductions[d.materialId] = (prevDeductions[d.materialId] || 0) + (Number(d.quantity) || 0);
+  if (previousOrder) {
+    if (previousOrder.materialsDeducted && Array.isArray(previousOrder.materialsDeducted) && previousOrder.materialsDeducted.length > 0) {
+      for (const d of previousOrder.materialsDeducted) {
+        if (d.materialId) {
+          prevDeductions[d.materialId] = (prevDeductions[d.materialId] || 0) + (Number(d.quantity) || 0);
+        }
+      }
+    } else if (previousOrder.items && Array.isArray(previousOrder.items) && currentMaterials && currentMaterials.length > 0) {
+      // Dự phòng cho đơn cũ chưa kịp ghi materialsDeducted: tự động bóc tách từ danh sách sản phẩm cũ
+      for (const item of previousOrder.items) {
+        if (!item.quantity || item.quantity <= 0) continue;
+        const resolved = resolveProductCoreMaterial(item, currentMaterials, catalogProducts);
+        if (resolved && !resolved.isNone && resolved.materialCoreId) {
+          prevDeductions[resolved.materialCoreId] = (prevDeductions[resolved.materialCoreId] || 0) + item.quantity;
+        }
       }
     }
   }
 
+  // 2. Phân tích số lượng ván mới cần trừ theo danh sách hàng hóa mới
   const newDeductions: Record<string, number> = {};
-  if (order.materialsDeducted && Array.isArray(order.materialsDeducted)) {
+  if (order.materialsDeducted && Array.isArray(order.materialsDeducted) && order.materialsDeducted.length > 0) {
     for (const d of order.materialsDeducted) {
       if (d.materialId) {
         newDeductions[d.materialId] = (newDeductions[d.materialId] || 0) + (Number(d.quantity) || 0);
       }
     }
+  } else if (order.items && Array.isArray(order.items) && currentMaterials && currentMaterials.length > 0) {
+    for (const item of order.items) {
+      if (!item.quantity || item.quantity <= 0) continue;
+      const resolved = resolveProductCoreMaterial(item, currentMaterials, catalogProducts);
+      if (resolved && !resolved.isNone && resolved.materialCoreId) {
+        newDeductions[resolved.materialCoreId] = (newDeductions[resolved.materialCoreId] || 0) + item.quantity;
+      }
+    }
   }
 
-  const affectedMaterialIds = Array.from(
-    new Set([...Object.keys(prevDeductions), ...Object.keys(newDeductions)])
-  );
-
-  const orderDocRef = doc(db, COLLECTIONS.ORDERS, order.id);
   const enrichedOrder = attachUserInfo({
     ...order,
     date: normalizeDateOnly(order.date),
@@ -372,10 +393,28 @@ export async function saveOrUpdateOrderWithInventoryTransaction(
     updatedAt: new Date().toISOString()
   }, user);
 
-  // Thử dùng runTransaction để đảm bảo tính Atomic ACID
+  // 3. Thực thi runTransaction đảm bảo tính Atomic ACID tuyệt đối:
   try {
     await runTransaction(db, async (transaction) => {
-      // 1. ALL READS FIRST (Bắt buộc theo nguyên tắc của Firestore runTransaction)
+      // PHASE 1: ALL READS FIRST (Bắt buộc theo nguyên tắc của Firestore runTransaction)
+      // Đọc document hóa đơn hiện có trên Firestore nếu có
+      const existingOrderSnap = await transaction.get(orderDocRef);
+      if (existingOrderSnap.exists()) {
+        const firestoreOrderData = existingOrderSnap.data();
+        if (firestoreOrderData?.materialsDeducted && Array.isArray(firestoreOrderData.materialsDeducted) && firestoreOrderData.materialsDeducted.length > 0) {
+          for (const d of firestoreOrderData.materialsDeducted) {
+            if (d.materialId && prevDeductions[d.materialId] === undefined) {
+              prevDeductions[d.materialId] = Number(d.quantity) || 0;
+            }
+          }
+        }
+      }
+
+      const affectedMaterialIds = Array.from(
+        new Set([...Object.keys(prevDeductions), ...Object.keys(newDeductions)])
+      );
+
+      // Đọc tồn kho hiện tại của tất cả các vật tư bị ảnh hưởng trực tiếp từ Firestore
       const materialReads: { ref: any; currentStock: number; id: string }[] = [];
       for (const matId of affectedMaterialIds) {
         const matRef = doc(db, COLLECTIONS.MATERIALS, matId);
@@ -390,25 +429,28 @@ export async function saveOrUpdateOrderWithInventoryTransaction(
         materialReads.push({ ref: matRef, currentStock: curStock, id: matId });
       }
 
-      // 2. ALL WRITES
-      // Lưu thông tin hóa đơn (ghi đè document ID cũ khi cập nhật)
+      // PHASE 2: ALL WRITES AFTER ALL READS
+      // 1. Lưu thông tin hóa đơn (merge true)
       transaction.set(orderDocRef, cleanFirestoreObject(enrichedOrder), { merge: true });
 
-      // Cập nhật số lượng tồn kho từng vật tư bị ảnh hưởng
+      // 2. Cập nhật tồn kho từng vật tư bị ảnh hưởng:
+      // Tồn kho mới = Tồn kho hiện tại + Trả lại từ đơn cũ (restoredQty) - Trừ theo đơn mới (deductQty)
       for (const m of materialReads) {
         const restoredQty = prevDeductions[m.id] || 0;
         const deductQty = newDeductions[m.id] || 0;
-        // Tồn kho mới = Tồn kho hiện tại + Trả lại từ đơn cũ - Trừ theo đơn mới
         const netStock = Math.round(Math.max(0, m.currentStock + restoredQty - deductQty) * 100) / 100;
-        transaction.update(m.ref, {
+        transaction.set(m.ref, {
           stockQuantity: netStock,
           updatedAt: new Date().toISOString()
-        });
+        }, { merge: true });
       }
     });
   } catch (txError) {
     console.warn('Firestore runTransaction fallback sang writeBatch:', txError);
-    // Fallback qua writeBatch khi chạy offline hoặc gặp lỗi Transaction timeout
+    // Fallback qua writeBatch khi chạy offline hoặc gặp timeout
+    const affectedMaterialIds = Array.from(
+      new Set([...Object.keys(prevDeductions), ...Object.keys(newDeductions)])
+    );
     const batch = writeBatch(db);
     batch.set(orderDocRef, cleanFirestoreObject(enrichedOrder), { merge: true });
 
@@ -419,10 +461,10 @@ export async function saveOrUpdateOrderWithInventoryTransaction(
       const deductQty = newDeductions[matId] || 0;
       const netStock = Math.round(Math.max(0, curStock + restoredQty - deductQty) * 100) / 100;
       const matRef = doc(db, COLLECTIONS.MATERIALS, matId);
-      batch.update(matRef, {
+      batch.set(matRef, {
         stockQuantity: netStock,
         updatedAt: new Date().toISOString()
-      });
+      }, { merge: true });
     }
     await batch.commit();
   }

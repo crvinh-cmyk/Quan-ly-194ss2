@@ -430,7 +430,7 @@ export default function App() {
     const previousOrder = orders.find(o => o.id === newOrder.id) || editingOrder || null;
 
     // Sử dụng Firestore Transaction an toàn: Hoàn trả kho cũ và trừ kho mới chính xác tuyệt đối
-    saveOrUpdateOrderWithInventoryTransaction(newOrder, previousOrder, userContext, materials)
+    saveOrUpdateOrderWithInventoryTransaction(newOrder, previousOrder, userContext, materials, partnerProducts)
       .catch(console.error);
 
     // If customer doesn't exist, create customer directly on Cloud
